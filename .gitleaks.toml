@@ -1,0 +1,10 @@
+# Gitleaks Configuration
+title = "SecureShare Allowlist"
+
+[allowlist]
+description = "Ignore test keys, docs, and crypto utils"
+paths = [
+    '''__tests__/watermark.test.js''',
+    '''FORENSIC_SYSTEM_README.md''',
+    '''utils/crypto.js'''
+]
