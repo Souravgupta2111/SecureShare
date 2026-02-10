@@ -1,0 +1,16 @@
+{
+    "name": "secure-watermark",
+    "version": "1.0.0",
+    "description": "Native secure watermark module",
+    "main": "index.ts",
+    "keywords": [
+        "react-native",
+        "expo",
+        "secure-watermark"
+    ],
+    "author": "",
+    "license": "ISC",
+    "dependencies": {
+        "expo-modules-core": "~2.1.1"
+    }
+}

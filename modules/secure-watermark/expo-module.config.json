@@ -1,0 +1,16 @@
+{
+    "platforms": [
+        "android",
+        "ios"
+    ],
+    "android": {
+        "modules": [
+            "com.secureshare.watermark.SecureWatermarkModule"
+        ]
+    },
+    "ios": {
+        "modules": [
+            "SecureWatermarkModule"
+        ]
+    }
+}

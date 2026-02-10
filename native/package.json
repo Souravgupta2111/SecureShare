@@ -1,0 +1,12 @@
+{
+    "name": "secureshare-native",
+    "version": "1.0.0",
+    "description": "SecureShare Native Modules",
+    "main": "index.js",
+    "author": "",
+    "license": "MIT",
+    "peerDependencies": {
+        "react": "*",
+        "react-native": "*"
+    }
+}
