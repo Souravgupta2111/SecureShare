@@ -1,60 +1,46 @@
-# Supabase Configuration
+# SecureShare Database Setup
 
-## Setup Instructions
+## Quick Start
 
-1. Go to [supabase.com](https://supabase.com) and create a free account
-2. Create a new project
-3. Go to Settings > API
-4. Copy your Project URL and anon public key
-5. Update `lib/supabase.js` with your credentials:
+Run these **2 files** in order in the Supabase SQL Editor:
 
-```javascript
-const SUPABASE_URL = 'https://your-project-id.supabase.co';
-const SUPABASE_ANON_KEY = 'your-anon-key-here';
-```
+1. **`01_schema.sql`** — Creates all tables, indexes, constraints, and triggers
+2. **`02_policies_and_functions.sql`** — Sets up all RLS policies, views, and RPC functions
 
-## Database Setup
+> **Important:** Run on a fresh Supabase project. If upgrading from the old schema, you should drop all existing tables and policies first, then run the two files above.
 
-1. Go to SQL Editor in your Supabase dashboard
-2. Copy the contents of `supabase/schema.sql`
-3. Paste and run in the SQL Editor
+## Storage Bucket
 
-## Storage Setup
+After running the SQL files, create a storage bucket in the Supabase Dashboard:
 
-1. Go to Storage in your Supabase dashboard
-2. Create a new bucket called `documents`
-3. Set it to **Private** (not public)
-4. File size limit: 50MB
-5. Allowed MIME types:
-   - image/jpeg
-   - image/png
-   - application/pdf
-   - application/octet-stream
+- **Name:** `documents`
+- **Public:** `false` (private bucket)
+- **File size limit:** 50MB
+- **Allowed MIME types:** `image/jpeg`, `image/png`, `application/pdf`, `application/octet-stream`
 
-## Environment Variables (Optional)
+The storage RLS policies are already included in `02_policies_and_functions.sql`.
 
-For production, use environment variables:
+## Architecture
 
-```bash
-EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-```
+| File | Purpose |
+|------|---------|
+| `01_schema.sql` | 12 tables, all indexes, constraints, triggers |
+| `02_policies_and_functions.sql` | All RLS policies, 5 RPCs, 2 views, storage policies |
 
-And update `lib/supabase.js`:
+### Tables
 
-```javascript
-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-```
+| Table | Purpose |
+|-------|---------|
+| `profiles` | User profiles with public keys for encryption |
+| `documents` | Uploaded documents metadata |
+| `access_grants` | Sharing permissions (who can view what) |
+| `document_keys` | Per-user encrypted AES keys |
+| `access_logs` | Append-only audit trail |
+| `analytics_events` | User analytics events |
+| `security_events` | Security incident log |
+| `document_analytics` | Per-session view tracking |
+| `document_watermark_hashes` | Forensic watermark proof |
+| `folders` | Document organization |
+| `document_comments` | Document comments |
+| `schema_migrations` | Migration versioning |
 
-## Free Tier Limits
-
-| Resource | Free Limit |
-|----------|------------|
-| Database | 500 MB |
-| Storage | 1 GB |
-| Auth Users | 50,000 |
-| Edge Functions | 500K invocations/month |
-| Realtime | 200 concurrent connections |
-
-This is more than enough to start!

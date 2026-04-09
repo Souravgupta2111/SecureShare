@@ -1,7 +1,22 @@
 {
-  "extends": "expo/tsconfig.base.json",
   "compilerOptions": {
     "strict": true,
+    "target": "ESNext",
+    "lib": [
+      "ESNext",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "jsx": "react-jsx",
+    "allowJs": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "isolatedModules": true,
     "paths": {
       "@/*": [
         "./*"
@@ -10,6 +25,14 @@
   },
   "include": [
     "**/*.ts",
-    "**/*.tsx"
-  ]
+    "**/*.tsx",
+    "**/*.js",
+    "**/*.jsx",
+    "global.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "supabase/functions/**"
+  ],
+  "extends": "expo/tsconfig.base"
 }

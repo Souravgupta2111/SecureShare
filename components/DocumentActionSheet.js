@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
         justifyContent: 'flex-end',
     },
     sheetContainer: {
-        backgroundColor: Platform.OS === 'android' ? theme.colors.bg.secondary : theme.colors.effects.glass.backgroundColor,
+        backgroundColor: Platform.OS === 'android' ? theme.colors.bg.secondary : theme.effects.glass.backgroundColor,
         borderTopLeftRadius: 24,
         borderTopRightRadius: 24,
         paddingBottom: 40,

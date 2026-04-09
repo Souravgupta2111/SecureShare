@@ -85,13 +85,19 @@ const UploadScreen = ({ navigation }) => {
             // 2. Generate document UUID and device hash
             const documentUUID = uuidv4();
             const deviceHash = await generateDeviceHash();
-            const timestamp = Date.now();
 
-            // 3. Create watermark payload with full information
-            // Format: documentUUID|recipientEmail|timestamp|deviceHash
-            // Note: For upload, recipientEmail will be set when access is granted
-            // We'll use owner email as initial recipient
-            const watermarkPayload = `${documentUUID}|${user.email}|${timestamp}|${deviceHash}`;
+            // 3. Generate encryption key (also used for HMAC signing)
+            const key = await generateKey();
+
+            // 4. Create SIGNED watermark payload with HMAC signature
+            // Format: documentUUID|email|timestamp|deviceHash|HMAC_SIGNATURE
+            // Must use signed payload for consistency with verification pipeline
+            const watermarkPayload = await watermark.createSignedWatermarkPayload(
+                documentUUID,
+                user.email,
+                deviceHash,
+                key
+            );
 
             // PERFORMANCE: Warn about large files
             if (file.size > 5 * 1024 * 1024) {
@@ -151,8 +157,7 @@ const UploadScreen = ({ navigation }) => {
             ).start();
 
             // 5. Encrypt watermarked data (Now returns Uint8Array)
-            // Generate a random key for this document
-            const key = await generateKey();
+            // Key was already generated above (used for both HMAC signing and AES encryption)
 
             // Encrypt the RAW Uint8Array directly (No Base64 overhead)
             const encryptedData = await encryptData(fileData, key);
@@ -161,6 +166,7 @@ const UploadScreen = ({ navigation }) => {
 
             // encryptedData is already Uint8Array, pass directly to upload
             const { data, error } = await uploadOnlineDocument({
+                id: documentUUID, // MUST align with embedded watermark!
                 filename: file.name,
                 mime_type: file.mimeType,
                 size_bytes: file.size,
@@ -191,12 +197,37 @@ const UploadScreen = ({ navigation }) => {
 
             // Save the ENCRYPTED key (never raw key)
             // TRANSACTION SAFETY: If key save fails, rollback the upload
-            const { error: keyError } = await saveDocumentKey(uploadedDocId, encryptedAesKey);
+            const { error: keyError } = await saveDocumentKey(uploadedDocId, encryptedAesKey, user.id);
             if (keyError) {
                 console.error('Key save failed, initiating rollback:', keyError);
                 // Rollback: delete the uploaded document
                 await deleteCloudDocument(uploadedDocId, uploadedFilePath);
                 throw new Error('Failed to secure encryption key. Upload rolled back for security.');
+            }
+
+            // Store watermark hash for forensic verification
+            try {
+                const { storeWatermarkHash } = require('../lib/supabase');
+                const { generateWatermarkHash } = require('../utils/watermark');
+
+                // Compute SHA-256 hash of the full signed payload for forensic storage
+                const payloadHash = await generateWatermarkHash(watermarkPayload);
+
+                // Extract the HMAC from the signed payload (last pipe-delimited segment)
+                const payloadParts = watermarkPayload.split('|');
+                const hmacSignature = payloadParts[payloadParts.length - 1] || '';
+
+                await storeWatermarkHash({
+                    document_id: uploadedDocId,
+                    recipient_email: user.email,
+                    watermark_hash: payloadHash,
+                    hmac_signature: hmacSignature,
+                    device_hash: deviceHash
+                });
+                console.log('[Upload] Watermark hash stored for forensic verification');
+            } catch (hashError) {
+                // Non-fatal: document is still usable, but forensic verification won't work
+                console.warn('[Upload] Failed to store watermark hash:', hashError);
             }
 
             Alert.alert("Success", "Document encrypted and uploaded securely.");

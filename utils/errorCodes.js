@@ -5,7 +5,7 @@
  * Ensures consistent user experience and proper error logging.
  */
 
-import { Platform } from 'react-native';
+import { Platform, Alert } from 'react-native';
 import { logAnalyticsEvent, logSecurityEvent } from '../lib/supabase';
 import { getCurrentUserId } from '../lib/supabase';
 import { queueAnalyticsEvent, queueSecurityEvent } from './analyticsQueue';

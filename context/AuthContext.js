@@ -40,18 +40,26 @@ export const AuthProvider = ({ children }) => {
     // Helper: Ensure Zero-Trust Keys Exist
     const ensureKeysExist = async (userId) => {
         try {
-            const storedPriv = await SecureStore.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
-            const { data: userProfile } = await getProfile(userId);
-
-            // Idempotency: If keys exist, do nothing
             // Check chunked storage first
             const part0 = await SecureStore.getItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`);
             const part1 = await SecureStore.getItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`);
             const hasChunked = part0 && part1;
 
+            const { data: userProfile } = await getProfile(userId);
+
             if (hasChunked && userProfile?.public_key) {
-                console.log('[Auth] Zero-Trust Identity verified.');
-                return;
+                // Verify chunk integrity: try to import the reconstructed PEM
+                try {
+                    const reconstructed = part0 + part1;
+                    await importPrivateKey(reconstructed);
+                    console.log('[Auth] Zero-Trust Identity verified (chunks intact).');
+                    return;
+                } catch (integrityError) {
+                    console.error('[Auth] Private key chunks corrupted, will regenerate:', integrityError.message);
+                    // Clear corrupted chunks
+                    await SecureStore.deleteItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`);
+                    await SecureStore.deleteItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`);
+                }
             }
 
             console.log('[Auth] Zero-Trust Identity missing. Generating keys...');
@@ -69,6 +77,13 @@ export const AuthProvider = ({ children }) => {
             await SecureStore.setItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`, chunk0);
             await SecureStore.setItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`, chunk1);
 
+            // Verify what we stored can be read back and imported
+            const verify0 = await SecureStore.getItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`);
+            const verify1 = await SecureStore.getItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`);
+            if (!verify0 || !verify1 || verify0 !== chunk0 || verify1 !== chunk1) {
+                throw new Error('SecureStore write verification failed — stored data does not match');
+            }
+
             // Publish Public Key to Profile
             await updateProfile(userId, { public_key: pubPem });
 
@@ -78,7 +93,7 @@ export const AuthProvider = ({ children }) => {
             console.log('[Auth] Identity established and keys synced.');
 
         } catch (e) {
-            console.error('[Auth] Key generation failed:', e);
+            console.warn('[Auth] Key generation failed:', e);
             // Non-blocking, but secure features will be limited
         }
     };
@@ -154,7 +169,7 @@ export const AuthProvider = ({ children }) => {
                     }
                 }
             } catch (error) {
-                console.error('Auth initialization error:', error);
+                console.warn('Auth initialization error:', error);
             } finally {
                 setLoading(false);
                 setInitialized(true);
@@ -228,16 +243,20 @@ export const AuthProvider = ({ children }) => {
     const handleSignOut = async () => {
         setLoading(true);
         try {
-            const { error } = await signOut();
-            if (error) throw error;
+            await signOut();
+            // Clear local keys securely regardless of server response
+            await SecureStore.deleteItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`);
+            await SecureStore.deleteItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`);
+            await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
+        } catch (error) {
+            console.warn('Sign out warning:', error.message);
+        } finally {
+            // Unconditionally clear local session to prevent stuck states
             setUser(null);
             setSession(null);
             setProfile(null);
-            return { success: true };
-        } catch (error) {
-            return { success: false, error: error.message };
-        } finally {
             setLoading(false);
+            return { success: true };
         }
     };
 

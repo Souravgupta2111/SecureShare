@@ -162,11 +162,14 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
         // Check DB
         if (extractedUUID) {
-            const doc = await storage.getDocumentByUUID(extractedUUID);
+            // Watermark format: "docUUID|email|ts|deviceHash" or "docUUID|email|ts|deviceHash|HMAC"
+            // Extract the document UUID (first segment)
+            const docId = extractedUUID.includes('|') ? extractedUUID.split('|')[0] : extractedUUID;
+            const doc = await storage.getDocumentByUUID(docId);
             if (doc) {
                 setResult({ status: 'found', data: doc });
             } else {
-                // UUID found but not in DB? (Deleted?)
+                // UUID found but not in local DB (could be online-only or deleted)
                 setResult({ status: 'not_found' });
             }
         } else {

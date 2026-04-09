@@ -4,11 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import theme from '../theme';
 import AnimatedHeader from '../components/AnimatedHeader';
 import { useAuth } from '../context/AuthContext';
-import * as SecureStore from 'expo-secure-store';
 import { getDocumentGrants, grantAccess, revokeAccess, getDocumentKey, saveDocumentKey, getProfileByEmail } from '../lib/supabase';
-import { decryptKey, encryptKey, importPublicKey, importPrivateKey } from '../utils/crypto';
-
-const PRIVATE_KEY_STORAGE_KEY = 'secureshare_private_key';
+import { encryptKey, importPublicKey } from '../utils/crypto';
+import { getPrivateKeyPem, decryptDocumentKey } from '../utils/CryptoService';
 
 const AccessControlScreen = ({ route, navigation }) => {
     const { document } = route.params;
@@ -59,15 +57,8 @@ const AccessControlScreen = ({ route, navigation }) => {
                 throw new Error("Could not retrieve encryption key for this document.");
             }
 
-            // 3. Get My Private Key
-            const privateKeyPem = await SecureStore.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
-            if (!privateKeyPem) {
-                throw new Error("Device private key missing. Cannot share.");
-            }
-
-            // 4. Decrypt AES Key
-            const privateKey = await importPrivateKey(privateKeyPem);
-            const aesKey = await decryptKey(myKeyData.encrypted_key, privateKey);
+            // 3. Decrypt AES Key using CryptoService (handles chunked + legacy key formats)
+            const aesKey = await decryptDocumentKey(myKeyData.encrypted_key);
 
             // 5. Encrypt AES Key for Recipient
             const recipientPubKey = await importPublicKey(recipientProfile.public_key);

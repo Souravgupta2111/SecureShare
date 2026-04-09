@@ -9,6 +9,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
+import { v4 as uuidv4 } from 'uuid';
 
 const DOCS_KEY = 'secureshare_docs';
 const EVENTS_KEY = 'secureshare_security_events';
@@ -264,7 +265,7 @@ export const duplicateDocument = async (uuid) => {
         const doc = await getDocumentWithData(uuid); // Get full data
         if (!doc) return null;
 
-        const newUuid = crypto.randomUUID();
+        const newUuid = uuidv4();
         const newDoc = {
             ...doc,
             uuid: newUuid,

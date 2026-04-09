@@ -10,7 +10,6 @@
  */
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import * as SecureStore from 'expo-secure-store';
 import {
     View,
     Text,
@@ -38,7 +37,8 @@ import FloatingWatermark, { WatermarkBackground } from '../components/FloatingWa
 import { useAuth } from '../context/AuthContext';
 import { logAnalyticsEvent, logSecurityEvent, downloadSecureBlob, getDocumentKey, validateAccessGrant } from '../lib/supabase';
 import { queueAnalyticsEvent, queueSecurityEvent } from '../utils/analyticsQueue';
-import { decryptData, decryptKey, importPrivateKey } from '../utils/crypto';
+import { decryptData } from '../utils/crypto';
+import { decryptDocumentKey } from '../utils/CryptoService';
 import { enableSecureMode, disableSecureMode, startScreenshotDetection, stopScreenshotDetection } from '../native/SecurityBridge';
 import { generateDeviceHash } from '../utils/deviceSecurity';
 import Pdf from 'react-native-pdf';
@@ -50,28 +50,6 @@ const clearClipboard = async () => {
     } catch (e) {
         // Ignore clipboard errors
     }
-};
-
-// Helper to convert Blob to Base64
-const blobToBase64 = (blob) => {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onerror = reject;
-        reader.onload = () => {
-            const result = reader.result;
-            // result is "data:application/octet-stream;base64,....."
-            if (typeof result === 'string') {
-                // Split at comma to get the base64 payload
-                const base64 = result.split(',')[1];
-                resolve(base64);
-            } else {
-                reject(new Error("Unexpected FileReader result type"));
-            }
-        };
-        // Use readAsDataURL to preserve binary integrity.
-        // readAsText would try to parse bytes as UTF-8, mangling non-printable chars.
-        reader.readAsDataURL(blob);
-    });
 };
 
 const ViewerScreen = ({ route, navigation }) => {
@@ -200,50 +178,32 @@ const ViewerScreen = ({ route, navigation }) => {
 
                     if (docMetadata.file_path) {
                         // --- ONLINE MODE ---
-                        // 2. Download Blob (Encrypted)
+                        // 1. Download Blob (Encrypted)
                         const { data: blob, error: dlError } = await downloadSecureBlob(docMetadata.file_path);
                         if (dlError) throw dlError;
 
-                        // 3. Convert Blob to String (It's an encrypted base64 string)
-                        const encryptedStr = await blobToBase64(blob);
+                        // 2. Convert Blob directly to Uint8Array (avoids base64 round-trip, saves ~33% memory)
+                        const encryptedBuffer = await new Response(blob).arrayBuffer();
+                        const encryptedBytes = new Uint8Array(encryptedBuffer);
 
-                        // 1. Get Key
+                        // 3. Get Key
                         const { data: keyData, error: keyError } = await getDocumentKey(docMetadata.id);
                         if (!keyData || keyError) {
                             console.error('[Viewer] Key fetch failed:', keyError);
-                            // Only throw if we truly simply cannot proceed. 
-                            // If we want to offer a "Reset" or "Re-upload" suggestion, we need to handle this.
-                            throw new Error(`Decryption key missing. (DocID: ${docMetadata.id}, Error: ${keyError?.message || 'Not found'})`);
+                            throw new Error(
+                                `Decryption key not found for this document.\n\n` +
+                                `This can happen if:\n` +
+                                `• The document owner hasn't shared the key with you\n` +
+                                `• The sharing was incomplete\n\n` +
+                                `Ask the document owner to re-share this document with you.`
+                            );
                         }
 
-                        // 4. Decrypt
-                        // ZERO-TRUST (RELAXED FOR STABILITY):
-                        // Prefer RSA-unwrapped AES key when private key is available,
-                        // but gracefully fall back to using the stored key directly.
-                        // Read chunked private key (consistent with AuthContext storage)
-                        const PRIVATE_KEY_STORAGE_KEY = 'secureshare_private_key';
-                        const part0 = await SecureStore.getItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`);
-                        const part1 = await SecureStore.getItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`);
-                        const chunkedKey = (part0 && part1) ? (part0 + part1) : null;
-                        // Fallback to legacy single-key storage
-                        const privateKeyPem = chunkedKey || await SecureStore.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
-                        let aesKeyHex = null;
+                        // 4. Decrypt AES key via CryptoService (handles chunked + legacy key formats)
+                        const aesKeyHex = await decryptDocumentKey(keyData.encrypted_key);
 
-                        if (privateKeyPem) {
-                            try {
-                                const privateKey = await importPrivateKey(privateKeyPem);
-                                aesKeyHex = await decryptKey(keyData.encrypted_key, privateKey);
-                            } catch (e) {
-                                console.warn('[Viewer] RSA key unwrap failed, falling back to raw key:', e);
-                                aesKeyHex = keyData.encrypted_key;
-                            }
-                        } else {
-                            console.warn('[Viewer] Private key not found. Using stored key directly (non-zero-trust fallback).');
-                            aesKeyHex = keyData.encrypted_key;
-                        }
-
-                        // Then decrypt document with the AES Key (hex string)
-                        const decryptedBase64 = await decryptData(encryptedStr, aesKeyHex);
+                        // 5. Decrypt document content with the AES key
+                        const decryptedBase64 = await decryptData(encryptedBytes, aesKeyHex);
 
                         // SECURITY: Verify watermark HMAC signature
                         try {
@@ -378,12 +338,16 @@ const ViewerScreen = ({ route, navigation }) => {
         };
     }, []);
 
-    // Log view end on unmount
+    // Log view end on unmount — use ref to avoid stale closure + duplicate cleanups
+    const viewSecondsRef = useRef(viewSeconds);
+    useEffect(() => {
+        viewSecondsRef.current = viewSeconds;
+    }, [viewSeconds]);
     useEffect(() => {
         return () => {
-            logViewEnd(viewSeconds);
+            logViewEnd(viewSecondsRef.current);
         };
-    }, [viewSeconds]);
+    }, []);
 
     const formatViewTime = (s) => {
         const m = Math.floor(s / 60);

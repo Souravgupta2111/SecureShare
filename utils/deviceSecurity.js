@@ -8,6 +8,7 @@
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Crypto from 'expo-crypto';
 
 // Common jailbreak/root indicators
 const JAILBREAK_PATHS_IOS = [
@@ -134,10 +135,8 @@ export const generateDeviceHash = async () => {
         const info = getDeviceInfo();
         const deviceString = `${info.brand || 'unknown'}-${info.modelName || 'unknown'}-${info.osName || 'unknown'}-${info.osVersion || 'unknown'}-${info.deviceYearClass || 'unknown'}`;
 
-        // Use expo-crypto to hash the device string
-        const { digestStringAsync } = await import('expo-crypto');
-        const hash = await digestStringAsync(
-            require('expo-crypto').CryptoDigestAlgorithm.SHA256,
+        const hash = await Crypto.digestStringAsync(
+            Crypto.CryptoDigestAlgorithm.SHA256,
             deviceString
         );
 
@@ -145,10 +144,14 @@ export const generateDeviceHash = async () => {
         return hash.substring(0, 16);
     } catch (error) {
         console.error('Failed to generate device hash:', error);
-        // Fallback: use a simple hash
+        // Fallback: use a simple hex conversion (no Buffer dependency)
         const info = getDeviceInfo();
         const fallback = `${info.brand || 'u'}-${info.modelName || 'u'}-${Date.now()}`;
-        return Buffer.from(fallback).toString('hex').substring(0, 16);
+        let hex = '';
+        for (let i = 0; i < fallback.length && hex.length < 16; i++) {
+            hex += fallback.charCodeAt(i).toString(16).padStart(2, '0');
+        }
+        return hex.substring(0, 16);
     }
 };
 

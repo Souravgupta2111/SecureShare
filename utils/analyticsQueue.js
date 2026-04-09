@@ -89,7 +89,7 @@ export const initializeAnalyticsQueue = async () => {
                 queue = JSON.parse(stored);
             }
         } catch (error) {
-            console.error('Failed to load analytics queue:', error);
+            console.warn('Failed to load analytics queue:', error);
         }
 
         // Start batch timer
@@ -170,6 +170,11 @@ export const queueAnalyticsEvent = async (event) => {
  * @param {Object} event - Security event data
  */
 export const queueSecurityEvent = async (event) => {
+    // Wait for initialization to complete if not yet initialized
+    if (!isInitialized && initPromise) {
+        await initPromise;
+    }
+
     // Ensure queue is an array
     if (!Array.isArray(queue)) {
         queue = [];
@@ -201,7 +206,7 @@ const saveQueue = async () => {
     try {
         await AsyncStorage.setItem(QUEUE_KEY, JSON.stringify(queue));
     } catch (error) {
-        console.error('Failed to save analytics queue:', error);
+        console.warn('Failed to save analytics queue:', error);
     }
 };
 
@@ -224,6 +229,12 @@ export const flushQueue = async () => {
             batch.map(async (event) => {
                 const retryCount = event._retryCount || 0;
 
+                // Respect exponential backoff: re-queue if not yet ready for retry
+                if (event._nextRetryAt && Date.now() < event._nextRetryAt) {
+                    queue.push(event); // Re-queue without incrementing retry count
+                    return { success: false, deferred: true };
+                }
+
                 // Skip if max retries exceeded
                 if (retryCount >= MAX_RETRY_ATTEMPTS) {
                     console.warn('Event dropped after max retries:', event.event_type);
@@ -238,7 +249,7 @@ export const flushQueue = async () => {
                     }
                     return { success: true };
                 } catch (error) {
-                    console.error('Failed to send event, will retry:', error);
+                    console.warn('Failed to send event, will retry:', error);
 
                     // Re-queue with incremented retry count and backoff delay
                     const backoffMs = BASE_RETRY_DELAY_MS * Math.pow(2, retryCount);
@@ -270,7 +281,7 @@ export const clearQueue = async () => {
 /**
  * Cleanup - stop timers and listeners
  */
-export const cleanupAnalyticsQueue = () => {
+export const cleanupAnalyticsQueue = async () => {
     if (batchTimer) {
         clearInterval(batchTimer);
         batchTimer = null;
@@ -279,8 +290,8 @@ export const cleanupAnalyticsQueue = () => {
         appStateSubscription.remove();
         appStateSubscription = null;
     }
-    // Flush remaining events
-    flushQueue();
+    // Flush remaining events (await to ensure they're sent)
+    await flushQueue();
 };
 
 export default {

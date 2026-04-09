@@ -29,10 +29,56 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// --- RATE LIMITING (in-memory, per-IP, resets on cold start) ---
+const RATE_LIMIT_WINDOW_MS = 60_000 // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 10
+const rateLimitMap = new Map<string, { count: number; windowStart: number }>()
+
+const checkRateLimit = (ip: string): boolean => {
+  const now = Date.now()
+  const entry = rateLimitMap.get(ip)
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(ip, { count: 1, windowStart: now })
+
+    // Periodically prune stale entries to prevent memory leak (every 100 checks)
+    if (rateLimitMap.size > 100) {
+      for (const [key, val] of rateLimitMap) {
+        if (now - val.windowStart > RATE_LIMIT_WINDOW_MS * 2) {
+          rateLimitMap.delete(key)
+        }
+      }
+    }
+
+    return true
+  }
+  entry.count++
+  return entry.count <= RATE_LIMIT_MAX_REQUESTS
+}
+
 serve(async (req: Request): Promise<Response> => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
+  }
+
+  // --- JWT AUTHENTICATION ---
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return Response.json(
+      { valid: false, confidence: 'none', error: 'unauthorized', message: 'Authorization header required' },
+      { status: 401, headers: corsHeaders }
+    )
+  }
+
+  // --- IP-BASED RATE LIMITING ---
+  const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+                   req.headers.get('cf-connecting-ip') ||
+                   'unknown'
+  if (!checkRateLimit(clientIp)) {
+    return Response.json(
+      { valid: false, confidence: 'none', error: 'rate_limited', message: 'Too many requests. Try again in 1 minute.' },
+      { status: 429, headers: { ...corsHeaders, 'Retry-After': '60' } }
+    )
   }
 
   try {
@@ -113,8 +159,9 @@ serve(async (req: Request): Promise<Response> => {
     // ------------------------------------------------------------------
     // INITIALIZE SUPABASE CLIENT
     // ------------------------------------------------------------------
-    const supabaseUrl = Deno.env.get('EDGE_SUPABASE_URL')
-    const serviceRoleKey = Deno.env.get('EDGE_SUPABASE_SERVICE_ROLE_KEY')
+    // Use standard Supabase Edge runtime env vars (with fallback for custom config)
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') || Deno.env.get('EDGE_SUPABASE_URL')
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || Deno.env.get('EDGE_SUPABASE_SERVICE_ROLE_KEY')
 
     if (!supabaseUrl || !serviceRoleKey) {
       return Response.json(
@@ -299,12 +346,4 @@ function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes))
     .map(b => b.toString(16).padStart(2, '0'))
     .join('')
-}
-
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16)
-  }
-  return bytes
 }

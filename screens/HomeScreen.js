@@ -9,7 +9,8 @@
  */
 
 import React, { useCallback, useEffect, useState, useRef, memo, useMemo } from 'react';
-import { View, Text, StyleSheet, FlatList, Animated, AccessibilityInfo, Alert, Pressable, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, FlatList, Animated, AccessibilityInfo, Alert, Pressable, RefreshControl, Platform } from 'react-native';
+import { BlurView } from 'expo-blur';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -143,15 +144,22 @@ const HomeScreen = ({ navigation }) => {
         // Merge and deduplicate documents
         const allDocs = [...localDocs, ...cloudDocs];
 
-        // Check expiry
+        // Check expiry and batch-update expired docs
         const now = Date.now();
+        const expiryUpdates = [];
         const updatedDocs = allDocs.map(doc => {
             if (doc.status === 'active' && doc.expiresAt < now) {
-                storage.updateDocument(doc.uuid, { status: 'expired' });
+                expiryUpdates.push(storage.updateDocument(doc.uuid, { status: 'expired' }));
                 return { ...doc, status: 'expired' };
             }
             return doc;
         });
+        // Await all expiry writes (previously fire-and-forget)
+        if (expiryUpdates.length > 0) {
+            await Promise.all(expiryUpdates).catch(e =>
+                console.error('[Home] Failed to persist expiry updates:', e)
+            );
+        }
 
         // Sort by sharedAt desc
         updatedDocs.sort((a, b) => b.sharedAt - a.sharedAt);
@@ -491,7 +499,13 @@ const HomeScreen = ({ navigation }) => {
                 <>
                     {/* Stats Row */}
                     <View style={styles.statsRow}>
-                        <View style={styles.statItem}>
+                        {Platform.OS === 'ios' ? (
+                            <BlurView intensity={40} tint={isDark ? "dark" : "light"} style={StyleSheet.absoluteFill} />
+                        ) : (
+                            <View style={[StyleSheet.absoluteFill, { backgroundColor: theme.colors.bg.glass }]} />
+                        )}
+                        <View style={styles.statsContent}>
+                            <View style={styles.statItem}>
                             <AnimatedNumber anim={sharedAnim} styles={styles} />
                             <Text style={styles.statLabel}>Shared</Text>
                         </View>
@@ -504,6 +518,7 @@ const HomeScreen = ({ navigation }) => {
                         <View style={styles.statItem}>
                             <AnimatedNumber anim={expiredAnim} styles={styles} />
                             <Text style={styles.statLabel}>Expired</Text>
+                        </View>
                         </View>
                     </View>
 
@@ -586,14 +601,18 @@ const HomeScreen = ({ navigation }) => {
 
 const createStyles = (theme, isDark) => StyleSheet.create({
     statsRow: {
-        flexDirection: 'row',
-        backgroundColor: theme.colors.bg.secondary,
         marginHorizontal: 16,
         marginTop: 16,
         marginBottom: 12,
-        paddingVertical: 16,
         borderRadius: 16,
-        ...theme.effects.shadow.md,
+        overflow: 'hidden',
+        borderWidth: 1,
+        borderColor: theme.colors.border.subtle,
+        ...theme.shadow.md,
+    },
+    statsContent: {
+        flexDirection: 'row',
+        paddingVertical: 16,
     },
     statItem: {
         flex: 1,

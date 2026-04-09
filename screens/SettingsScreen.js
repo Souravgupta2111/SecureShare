@@ -15,7 +15,7 @@ import * as Haptics from 'expo-haptics';
 const PRIVATE_KEY_STORAGE_KEY = 'secureshare_private_key';
 
 const SettingsScreen = ({ navigation }) => {
-    const { analyticsConsent, errorReportingConsent, updateConsent, user, profile } = useAuth();
+    const { analyticsConsent, errorReportingConsent, updateConsent, user, profile, signOut } = useAuth();
     const { theme, isDark, themeMode, setThemeMode, toggleTheme } = useTheme();
     const [securityAlerts, setSecurityAlerts] = useState(true);
     const [openAlerts, setOpenAlerts] = useState(true);
@@ -311,8 +311,26 @@ const SettingsScreen = ({ navigation }) => {
                     </TouchableOpacity>
                 </View>
 
-                {/* Data */}
-                <Text style={styles.sectionTitle}>DATA</Text>
+                {/* Account & Data */}
+                <Text style={styles.sectionTitle}>ACCOUNT & DATA</Text>
+                
+                {/* Sign Out */}
+                <TouchableOpacity
+                    style={[styles.card, { marginBottom: 12 }]}
+                    onPress={async () => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        const res = await signOut();
+                        // RootNavigator automatically switches to Auth stack when user becomes null
+                    }}
+                    activeOpacity={0.7}
+                >
+                    <View style={styles.row}>
+                        <Text style={styles.dangerText}>Sign Out Securely</Text>
+                        <Ionicons name="log-out-outline" size={20} color={theme.colors.status.danger} />
+                    </View>
+                </TouchableOpacity>
+
+                {/* Clear All Data */}
                 <TouchableOpacity
                     style={styles.card}
                     onPress={handleClearData}
@@ -320,7 +338,7 @@ const SettingsScreen = ({ navigation }) => {
                 >
                     <View style={styles.row}>
                         <Text style={styles.dangerText}>Clear All Data</Text>
-                        <Ionicons name="chevron-forward" size={20} color={theme.colors.status.danger} />
+                        <Ionicons name="trash-outline" size={20} color={theme.colors.status.danger} />
                     </View>
                 </TouchableOpacity>
 

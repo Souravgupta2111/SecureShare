@@ -17,6 +17,10 @@ const DEFAULT_MAX_ITEM_SIZE = 5 * 1024 * 1024; // 5MB per item
 const MAX_TOTAL_CACHE_SIZE = 30 * 1024 * 1024; // 30MB total cache limit
 const MIN_STORAGE_THRESHOLD = 50 * 1024 * 1024; // 50MB minimum free space
 
+// Persistence
+const CACHE_META_KEY = 'secureshare_lru_cache_meta';
+const CACHE_FILES_DIR = FileSystem.cacheDirectory + 'secureshare_lru/';
+
 // Simple LRU Cache implementation
 class LRUCache {
     constructor(maxSize = DEFAULT_CACHE_SIZE) {
@@ -59,11 +63,8 @@ class LRUCache {
         }
 
         // Evict if total cache size exceeds limit
-        const currentTotal = this._totalSize || 0;
-        while (currentTotal + sizeBytes > MAX_TOTAL_CACHE_SIZE && this.accessOrder.length > 0) {
+        while ((this._totalSize || 0) + sizeBytes > MAX_TOTAL_CACHE_SIZE && this.accessOrder.length > 0) {
             this._evictLRU();
-            // Recalculate after eviction
-            this._recalculateTotalSize();
         }
 
         // Add new item
@@ -90,10 +91,11 @@ class LRUCache {
         this.cache.clear();
         this.accessOrder = [];
         this._totalSize = 0;
+        // Async disk cleanup (fire-and-forget)
+        _clearDiskCache().catch(e => console.warn('[MemoryManager] Disk cache clear failed:', e));
     }
 
     getCacheStats() {
-        // Use tracked total size for efficiency
         const totalSize = this._totalSize || 0;
         return {
             itemCount: this.cache.size,
@@ -117,6 +119,8 @@ class LRUCache {
             console.log(`[MemoryManager] Evicting LRU item: ${keyToEvict} (${itemSize} bytes)`);
             this.cache.delete(keyToEvict);
             this._totalSize = (this._totalSize || 0) - itemSize;
+            // Remove file from disk cache
+            _removeDiskEntry(keyToEvict).catch(() => {});
         }
     }
 
@@ -129,6 +133,104 @@ class LRUCache {
     }
 }
 
+// --- DISK PERSISTENCE HELPERS ---
+
+const _ensureCacheDir = async () => {
+    const info = await FileSystem.getInfoAsync(CACHE_FILES_DIR);
+    if (!info.exists) {
+        await FileSystem.makeDirectoryAsync(CACHE_FILES_DIR, { intermediates: true });
+    }
+};
+
+/** Save cache metadata (keys, sizes, order) to AsyncStorage */
+const _persistMeta = async (cache) => {
+    try {
+        const meta = {
+            accessOrder: cache.accessOrder,
+            items: {},
+        };
+        cache.cache.forEach((value, key) => {
+            meta.items[key] = { sizeBytes: value.sizeBytes, timestamp: value.timestamp };
+        });
+        await AsyncStorage.setItem(CACHE_META_KEY, JSON.stringify(meta));
+    } catch (e) {
+        console.warn('[MemoryManager] Meta persist failed:', e);
+    }
+};
+
+/** Save a document blob to the disk cache */
+const _saveToDisk = async (key, data) => {
+    try {
+        await _ensureCacheDir();
+        const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const path = CACHE_FILES_DIR + safeKey + '.cache';
+        // data could be base64 string or serializable object
+        const serialized = typeof data === 'string' ? data : JSON.stringify(data);
+        await FileSystem.writeAsStringAsync(path, serialized);
+    } catch (e) {
+        console.warn('[MemoryManager] Disk write failed for', key, e);
+    }
+};
+
+/** Load a document blob from the disk cache */
+const _loadFromDisk = async (key) => {
+    try {
+        const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const path = CACHE_FILES_DIR + safeKey + '.cache';
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) return null;
+        const raw = await FileSystem.readAsStringAsync(path);
+        try { return JSON.parse(raw); } catch { return raw; }
+    } catch {
+        return null;
+    }
+};
+
+const _removeDiskEntry = async (key) => {
+    try {
+        const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const path = CACHE_FILES_DIR + safeKey + '.cache';
+        await FileSystem.deleteAsync(path, { idempotent: true });
+    } catch { /* ignore */ }
+};
+
+const _clearDiskCache = async () => {
+    try {
+        await FileSystem.deleteAsync(CACHE_FILES_DIR, { idempotent: true });
+        await AsyncStorage.removeItem(CACHE_META_KEY);
+    } catch { /* ignore */ }
+};
+
+/** Restore cache metadata from disk on init */
+const _restoreCache = async (cache) => {
+    try {
+        const raw = await AsyncStorage.getItem(CACHE_META_KEY);
+        if (!raw) return;
+        const meta = JSON.parse(raw);
+        if (!meta?.accessOrder || !meta?.items) return;
+
+        // Restore access order and metadata (data loaded lazily from disk)
+        for (const key of meta.accessOrder) {
+            const item = meta.items[key];
+            if (item) {
+                const data = await _loadFromDisk(key);
+                if (data !== null) {
+                    cache.cache.set(key, {
+                        value: data,
+                        sizeBytes: item.sizeBytes || 0,
+                        timestamp: item.timestamp || Date.now(),
+                    });
+                    cache.accessOrder.push(key);
+                    cache._totalSize += item.sizeBytes || 0;
+                }
+            }
+        }
+        console.log(`[MemoryManager] Restored ${cache.cache.size} items from disk cache`);
+    } catch (e) {
+        console.warn('[MemoryManager] Cache restore failed:', e);
+    }
+};
+
 // Singleton cache instance
 const documentCache = new LRUCache(DEFAULT_CACHE_SIZE);
 
@@ -140,10 +242,15 @@ let isLowMemory = false;
  * Initialize memory manager
  * Call this on app startup
  */
-export const initializeMemoryManager = () => {
-    // Listen for app state changes to clear cache on background
+export const initializeMemoryManager = async () => {
+    // Restore persisted cache from disk
+    await _restoreCache(documentCache);
+
+    // Listen for app state changes
     AppState.addEventListener('change', (state) => {
         if (state === 'background') {
+            // Persist metadata before going to background
+            _persistMeta(documentCache).catch(() => {});
             // Clear half the cache when backgrounded to free memory
             const itemsToEvict = Math.floor(documentCache.cache.size / 2);
             for (let i = 0; i < itemsToEvict; i++) {
@@ -152,18 +259,7 @@ export const initializeMemoryManager = () => {
         }
     });
 
-    // Platform-specific memory warning handlers
-    if (Platform.OS === 'ios') {
-        // iOS sends memory warnings through AppState events
-        // Note: Actual memory warning listener requires native module
-        console.log('[MemoryManager] Initialized for iOS');
-    } else if (Platform.OS === 'android') {
-        // Android doesn't have a built-in JS memory warning API in RN
-        // Could be handled via native module
-        console.log('[MemoryManager] Initialized for Android');
-    }
-
-    console.log('[MemoryManager] Cache initialized with max', DEFAULT_CACHE_SIZE, 'items');
+    console.log(`[MemoryManager] Initialized with ${documentCache.cache.size} cached items, max ${DEFAULT_CACHE_SIZE}`);
 };
 
 /**
@@ -210,12 +306,18 @@ export const getCachedDocument = (documentId) => {
  * @param {any} data - Data to cache
  * @param {number} sizeBytes - Size of data in bytes
  */
-export const cacheDocument = (documentId, data, sizeBytes = 0) => {
+export const cacheDocument = async (documentId, data, sizeBytes = 0) => {
     if (isLowMemory) {
         console.log('[MemoryManager] Skipping cache in low memory state');
         return false;
     }
-    return documentCache.set(`doc_${documentId}`, data, sizeBytes);
+    const key = `doc_${documentId}`;
+    const result = documentCache.set(key, data, sizeBytes);
+    if (result) {
+        // Persist to disk (non-blocking)
+        _saveToDisk(key, data).then(() => _persistMeta(documentCache)).catch(() => {});
+    }
+    return result;
 };
 
 /**

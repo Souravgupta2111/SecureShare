@@ -251,9 +251,9 @@ const ShareScreen = ({ navigation }) => {
                 const encryptedData = await encryptData(watermarkedData, key);
                 console.log('[Share] Encryption complete. Type:', encryptedData.constructor.name);
 
-                // 6. Upload encrypted document (encryptData returns Uint8Array)
                 const arrayBuffer = encryptedData instanceof Uint8Array ? encryptedData : new Uint8Array(encryptedData);
                 const { data: docData, error: uploadError } = await uploadOnlineDocument({
+                    id: documentUUID, // Align Supabase DB primary key with watermark payload
                     filename: selectedFile.name,
                     mime_type: selectedFile.mimeType,
                     size_bytes: selectedFile.size,
@@ -263,7 +263,22 @@ const ShareScreen = ({ navigation }) => {
 
                 if (uploadError) throw uploadError;
 
-                // 6. Check owner has keys
+                // 6. Store watermark hash for forensic verification (Sender's Master Watermark)
+                try {
+                    const watermarkHash = await watermark.generateWatermarkHash(signedWatermarkPayload);
+                    const { error: hashError } = await storeWatermarkHash({
+                        document_id: docData.id,
+                        recipient_email: user.email,
+                        watermark_hash: watermarkHash,
+                        hmac_signature: signedWatermarkPayload.split('|').pop(),
+                        device_hash: deviceHash
+                    });
+                    if (hashError) console.warn('[Share] Failed to store master watermark hash:', hashError);
+                } catch (hashExp) {
+                    console.warn('[Share] Failed to compute/store master watermark hash:', hashExp);
+                }
+
+                // 7. Check owner has keys
                 // SECURITY CRITICAL: Never store raw key - require public key
                 const activeProfile = currentProfile || profile;
                 if (!activeProfile?.public_key) {
@@ -351,21 +366,6 @@ const ShareScreen = ({ navigation }) => {
                             throw new Error(`Failed to grant access: ${grantError.message}`);
                         }
 
-                        // e) Store watermark hash (Forensic Proof) - using utility function
-                        const watermarkHash = await watermark.generateWatermarkHash(signedWatermarkPayload);
-                        const { error: hashError } = await storeWatermarkHash({
-                            document_id: docData.id,
-                            recipient_email: recipientEmail,
-                            watermark_hash: watermarkHash,
-                            hmac_signature: signedWatermarkPayload.split('|').pop(),
-                            device_hash: deviceHash
-                        });
-
-                        if (hashError) {
-                            console.error(`[Share] Failed to store watermark hash for ${recipientEmail}:`, hashError);
-                            // Non-critical, continue
-                        }
-
                     } catch (recipientError) {
                         console.error(`[Share] Failed to process recipient ${recipientEmail}:`, recipientError);
                         failedRecipients.push({ email: recipientEmail, error: recipientError.message });
@@ -407,9 +407,16 @@ const ShareScreen = ({ navigation }) => {
 
                 // 3. Watermark - create payload with recipient info
                 const deviceHash = await generateDeviceHash();
-                const timestamp = Date.now();
-                // For local sharing, create watermark per recipient
-                const watermarkPayload = `${uuid}|${recipients[0] || 'local'}|${timestamp}|${deviceHash}`;
+                const key = await generateKey(); // Generate key for HMAC signature
+                
+                // For local sharing, create watermark per recipient (Signed)
+                const recipientName = recipients[0] || 'local';
+                const watermarkPayload = await watermark.createSignedWatermarkPayload(
+                    uuid, 
+                    recipientName, 
+                    deviceHash, 
+                    key
+                );
 
                 let processedBase64 = null;
                 if (selectedFile.type === 'image') {

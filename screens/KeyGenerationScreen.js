@@ -24,7 +24,6 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import * as SecureStore from 'expo-secure-store';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useNavigation } from '@react-navigation/native';
 import theme from '../theme';
 import { generateKeyPair, exportPublicKey, exportPrivateKey } from '../utils/crypto';
 import { updateProfile } from '../lib/supabase';
@@ -32,10 +31,9 @@ import { useAuth } from '../context/AuthContext';
 
 const PRIVATE_KEY_STORAGE_KEY = 'secureshare_private_key';
 
-const KeyGenerationScreen = ({ userId: propUserId, onComplete, onSkip }) => {
+const KeyGenerationScreen = ({ userId: propUserId, onComplete, onSkip, navigation }) => {
     // Support both modal (prop-based) and navigation (context-based) usage
     const { user, completeKeyGeneration } = useAuth();
-    const navigation = useNavigation();
     const userId = propUserId || user?.id;
 
     const [status, setStatus] = useState('initializing'); // initializing, generating, exporting, saving, complete, error
@@ -131,7 +129,7 @@ const KeyGenerationScreen = ({ userId: propUserId, onComplete, onSkip }) => {
             setTimeout(() => {
                 if (onComplete) {
                     onComplete();
-                } else {
+                } else if (navigation) {
                     // Called from Settings - update auth context and navigate back
                     completeKeyGeneration?.();
                     navigation.goBack();
@@ -159,7 +157,7 @@ const KeyGenerationScreen = ({ userId: propUserId, onComplete, onSkip }) => {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         if (onSkip) {
             onSkip();
-        } else {
+        } else if (navigation) {
             // Called from Settings - just navigate back
             navigation.goBack();
         }
