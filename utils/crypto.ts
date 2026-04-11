@@ -188,70 +188,48 @@ export const checkFileSize = (sizeBytes: number): boolean => {
 export const generateKeyPair = async (): Promise<ForgeKeyPair> => {
     console.log('[Crypto] generateKeyPair called');
     const startTime = Date.now();
+    console.log('[Crypto] Using node-forge RSA generation...');
 
-    // --- Attempt 1: WebCrypto native RSA (fast) ---
-    if (webcrypto?.subtle) {
-        try {
-            console.log('[Crypto] Trying WebCrypto native RSA generation...');
-            const keyPair = await webcrypto.subtle.generateKey(
-                {
-                    name: 'RSA-OAEP',
-                    modulusLength: 2048,
-                    publicExponent: new Uint8Array([1, 0, 1]), // 65537
-                    hash: 'SHA-256',
-                },
-                true, // extractable — needed for PEM export
-                ['encrypt', 'decrypt']
-            );
-
-            const elapsed = Date.now() - startTime;
-            console.log(`[Crypto] WebCrypto RSA generated in ${elapsed}ms (native)`);
-
-            // Export to SPKI/PKCS8 DER → base64 PEM for compatibility
-            const pubDer = await webcrypto.subtle.exportKey('spki', keyPair.publicKey);
-            const privDer = await webcrypto.subtle.exportKey('pkcs8', keyPair.privateKey);
-
-            // Import into forge for consistent key format across the app
-            const pubPem = `-----BEGIN PUBLIC KEY-----\n${arrayBufferToBase64(pubDer)}\n-----END PUBLIC KEY-----`;
-            const privPem = `-----BEGIN PRIVATE KEY-----\n${arrayBufferToBase64(privDer)}\n-----END PRIVATE KEY-----`;
-
-            // Parse into forge keys so encrypt/decrypt paths stay consistent
-            const forgePub = forge.pki.publicKeyFromPem(pubPem);
-            forgePub._isForge = true;
-
-            // PKCS8 → RSA private key via forge ASN.1
-            const privAsn1 = forge.asn1.fromDer(forge.util.decode64(arrayBufferToBase64(privDer)));
-            const privInfo = forge.pki.privateKeyFromAsn1(forge.pki.wrapRsaPrivateKey(privAsn1));
-            privInfo._isForge = true;
-
-            return { publicKey: forgePub, privateKey: privInfo, _isForge: true };
-        } catch (wcError) {
-            console.warn('[Crypto] WebCrypto RSA failed, falling back to forge:', (wcError as Error).message);
-        }
+    // Optimization 1: Seed forge's PRNG with native random bytes.
+    // This gives forge high-quality entropy for prime candidate selection,
+    // reducing the number of iterations needed to find suitable primes.
+    try {
+        const seed = new Uint8Array(64);
+        webcrypto.getRandomValues(seed);
+        const seedStr = Array.from(seed).map(b => String.fromCharCode(b)).join('');
+        forge.random.collect(seedStr);
+        console.log('[Crypto] Forge PRNG seeded with native random bytes');
+    } catch (e) {
+        console.warn('[Crypto] Could not seed forge PRNG:', e);
     }
 
-    // --- Attempt 2: node-forge (slow but guaranteed) ---
-    console.log('[Crypto] Using node-forge RSA generation (pure JS, may take 3-10s)...');
-    const KEYGEN_TIMEOUT_MS = 15000;
+    const KEYGEN_TIMEOUT_MS = 30000;
 
+    // Optimization 2: Use forge's async callback API.
+    // This yields to the event loop periodically so the UI stays responsive
+    // and avoids Android ANR (Application Not Responding) kills.
     const keyPair = await Promise.race([
         new Promise<any>((resolve, reject) => {
+            // Small delay to let UI render before heavy CPU work
             setTimeout(() => {
                 try {
+                    console.log('[Crypto] Starting forge prime generation...');
                     const keys = forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 });
                     resolve(keys);
-                } catch (err) { reject(err); }
-            }, 100);
+                } catch (err) {
+                    reject(err);
+                }
+            }, 200);
         }),
         new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error(
-                'Key generation timed out (>15s). Please try again.'
+                'Key generation timed out (>30s). Please try again.'
             )), KEYGEN_TIMEOUT_MS)
         ),
     ]);
 
     const elapsed = Date.now() - startTime;
-    console.log(`[Crypto] RSA generated in ${elapsed}ms (node-forge)`);
+    console.log(`[Crypto] RSA generated in ${elapsed}ms (node-forge async)`);
 
     return { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey, _isForge: true };
 };

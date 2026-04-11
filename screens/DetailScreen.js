@@ -8,12 +8,14 @@ import AnimatedHeader from '../components/AnimatedHeader';
 import StatusBadge from '../components/StatusBadge';
 import * as storage from '../utils/storage';
 import { getCleanImageBase64 } from '../utils/watermark';
+import QRCodeModal from '../components/QRCodeModal';
 
 const DetailScreen = ({ route, navigation }) => {
     const { document: initialDoc } = route.params;
     const [doc, setDoc] = useState(initialDoc);
     const [docData, setDocData] = useState(null);
     const [isLoadingData, setIsLoadingData] = useState(true);
+    const [qrVisible, setQrVisible] = useState(false);
     const isFocused = useIsFocused();
 
     const loadDoc = async () => {
@@ -190,12 +192,6 @@ const DetailScreen = ({ route, navigation }) => {
                     </Pressable>
                 </View>
 
-                import QRCodeModal from '../components/QRCodeModal';
-
-                // ... (inside component)
-                const [qrVisible, setQrVisible] = useState(false);
-
-                // ... (in render)
                 {/* Actions */}
                 <View style={styles.actionsRow}>
                     <Pressable style={styles.revokeBtn} onPress={handleRevoke}>
