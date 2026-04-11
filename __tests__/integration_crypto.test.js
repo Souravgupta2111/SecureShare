@@ -100,8 +100,7 @@ describe('End-to-End Secure Sharing Flow', () => {
         // Let's look at crypto.js logic: returns base64 string.
         const decryptedDocBase64 = await decryptData(encryptedContent, bobDecryptedKey);
 
-        // Convert base64 result back to string to verify
-        const decodedContent = atob(decryptedDocBase64);
-        expect(decodedContent).toBe(SECRET_DOC_CONTENT);
+        // Assert pure equivalence
+        expect(decryptedDocBase64).toBe(SECRET_DOC_CONTENT);
     });
 });
