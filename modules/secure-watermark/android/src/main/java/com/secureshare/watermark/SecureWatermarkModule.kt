@@ -61,8 +61,20 @@ class SecureWatermarkModule : Module() {
                 
                 cleanUtf8Bytes = cipher.doFinal(encryptedBytes)
                 
-                // 4. Decode internal Base64 (JS encrypts the Base64 string representation)
-                val base64String = String(cleanUtf8Bytes, Charsets.UTF_8)
+                // 4. Decode String to get Base64
+                var base64String = String(cleanUtf8Bytes, Charsets.UTF_8)
+                
+                // BACKWARDS COMPATIBILITY HACK: 
+                // Legacy LSB images uploaded previously have a payload appended to the Base64 string.
+                // The magic sequence 'IyMjU1dNSyMj' (base64 for ###SWMK##) starts the garbage suffix.
+                // If we don't strip it, Kotlin's Base64.decode will throw IllegalArgumentException.
+                val magic = "IyMjU1dNSyMj"
+                val garbageIndex = base64String.lastIndexOf(magic)
+                if (garbageIndex != -1) {
+                    base64String = base64String.substring(0, garbageIndex)
+                }
+
+                // 5. Decode Image Pixel Array
                 imageBytes = Base64.decode(base64String, Base64.DEFAULT)
                 
                 // 5. Decode Image Pixel Array
