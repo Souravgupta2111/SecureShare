@@ -153,39 +153,51 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
         try {
             if (fileObj.type === 'image') {
-                const { SecureWatermark } = require('react-native').NativeModules;
-                
-                // STEP 1: Two-step forensic scan. First, collect all known local documents.
-                const allDocs = await storage.getAllDocuments();
-                const allDocIds = allDocs.map(d => d.id || d.uuid).filter(Boolean);
-                
-                const detectedDocId = await SecureWatermark.detectDocumentId(
-                    fileObj.base64,
-                    JSON.stringify(allDocIds)
-                );
-                
-                if (detectedDocId) {
-                    extractedUUID = detectedDocId;
-                    targetDoc = await storage.getDocumentByUUID(detectedDocId);
-                    
-                    if (targetDoc) {
-                        // STEP 2: Correlate user ID from known document recipients
-                        const candidates = targetDoc.recipients?.map(r => r.email).filter(Boolean) || [];
-                        if (targetDoc.owner_email) candidates.push(targetDoc.owner_email); // Edgecase: owner leaked it themselves
-                        
-                        if (candidates.length > 0) {
-                            const leakResult = await SecureWatermark.detectLeaker(
-                                fileObj.base64,
-                                detectedDocId,
-                                JSON.stringify(candidates)
-                            );
-                            
-                            if (leakResult && leakResult.confidence > 1.5) {
-                                leakerId = leakResult.userId;
-                                confidenceScore = leakResult.confidence;
+                let SecureWatermark = null;
+                try {
+                    const { requireNativeModule } = require('expo-modules-core');
+                    SecureWatermark = requireNativeModule('SecureWatermark');
+                } catch (e) {
+                    console.warn('[VerifyLeak] SecureWatermark not available:', e.message);
+                }
+
+                if (SecureWatermark) {
+                    // STEP 1: Two-step forensic scan. Collect all known local documents.
+                    const allDocs = await storage.getAllDocuments();
+                    const allDocIds = allDocs.map(d => d.id || d.uuid).filter(Boolean);
+
+                    const detectedDocId = await SecureWatermark.detectDocumentId(
+                        fileObj.base64,
+                        JSON.stringify(allDocIds)
+                    );
+
+                    if (detectedDocId) {
+                        extractedUUID = detectedDocId;
+                        targetDoc = await storage.getDocumentByUUID(detectedDocId);
+
+                        if (targetDoc) {
+                            // STEP 2: Correlate user ID from known document recipients
+                            const candidates = targetDoc.recipients?.map(r => r.email).filter(Boolean) || [];
+                            if (targetDoc.owner_email) candidates.push(targetDoc.owner_email);
+
+                            if (candidates.length > 0) {
+                                const leakResult = await SecureWatermark.detectLeaker(
+                                    fileObj.base64,
+                                    detectedDocId,
+                                    JSON.stringify(candidates)
+                                );
+
+                                if (leakResult && leakResult.confidence > 1.5) {
+                                    leakerId = leakResult.userId;
+                                    confidenceScore = leakResult.confidence;
+                                }
                             }
                         }
                     }
+                } else {
+                    // Fallback to legacy extraction if native module not available
+                    const extractionResult = await watermark.extractImageWatermarkAsync(fileObj.base64);
+                    extractedUUID = extractionResult.data;
                 }
             } else {
                 extractedUUID = watermark.extractDocumentWatermark(fileObj.base64, fileObj.ext);

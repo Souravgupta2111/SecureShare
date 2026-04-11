@@ -45,6 +45,7 @@ class SecureWatermarkModule : Module() {
                 // 1. Decode the input layer
                 val cipherBuffer = Base64.decode(encryptedInput, Base64.DEFAULT)
                 val keyBytes = hexStringToByteArray(aesKeyHex)
+                android.util.Log.d("SecureWatermark", "Step 1: cipherBuffer size=${cipherBuffer.size}, keyBytes size=${keyBytes.size}")
 
                 // 2. Separate IV (first 12 bytes) from GCM ciphertext
                 if (cipherBuffer.size < 12) {
@@ -52,6 +53,7 @@ class SecureWatermarkModule : Module() {
                 }
                 val iv = cipherBuffer.copyOfRange(0, 12)
                 val encryptedBytes = cipherBuffer.copyOfRange(12, cipherBuffer.size)
+                android.util.Log.d("SecureWatermark", "Step 2: IV=${iv.size} bytes, encrypted=${encryptedBytes.size} bytes")
 
                 // 3. AES-GCM Decryption (NoPadding format mapped to JS WebCrypto)
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -60,9 +62,11 @@ class SecureWatermarkModule : Module() {
                 cipher.init(Cipher.DECRYPT_MODE, secretKey, gcmSpec)
                 
                 cleanUtf8Bytes = cipher.doFinal(encryptedBytes)
+                android.util.Log.d("SecureWatermark", "Step 3: Decrypted ${cleanUtf8Bytes!!.size} bytes")
                 
                 // 4. Decode String to get Base64
                 var base64String = String(cleanUtf8Bytes, Charsets.UTF_8)
+                android.util.Log.d("SecureWatermark", "Step 4: base64String length=${base64String.length}, first 80 chars=${base64String.take(80)}")
                 
                 // BACKWARDS COMPATIBILITY HACK: 
                 // Legacy LSB images uploaded previously have a payload appended to the Base64 string.
@@ -71,15 +75,17 @@ class SecureWatermarkModule : Module() {
                 val magic = "IyMjU1dNSyMj"
                 val garbageIndex = base64String.lastIndexOf(magic)
                 if (garbageIndex != -1) {
+                    android.util.Log.d("SecureWatermark", "Step 4b: Found legacy delimiter at index $garbageIndex, stripping")
                     base64String = base64String.substring(0, garbageIndex)
                 }
 
                 // 5. Decode Image Pixel Array
                 imageBytes = Base64.decode(base64String, Base64.DEFAULT)
+                android.util.Log.d("SecureWatermark", "Step 5: imageBytes size=${imageBytes!!.size}, first 4 bytes=${imageBytes.take(4).map { it.toInt() and 0xFF }}")
                 
-                // 5. Decode Image Pixel Array
+                // 6. Decode bitmap from raw image bytes
                 cleanBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                    ?: throw Exception("Failed to decode native image bitmap")
+                    ?: throw Exception("Failed to decode native image bitmap (imageBytes=${imageBytes.size}, header=${imageBytes.take(8).map { String.format("%02X", it) }.joinToString(" ")})")
 
                 // 6. Embed Spread-Spectrum Watermark IMMEDIATELY into in-memory bitmap
                 watermarkedBitmap = SpreadSpectrumWatermark.embed(cleanBitmap, userId, docId)
@@ -106,6 +112,43 @@ class SecureWatermarkModule : Module() {
                 if (watermarkedBitmap?.isRecycled == false) {
                     watermarkedBitmap.recycle()
                 }
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // LIGHTWEIGHT EMBED-ONLY (JS decrypts, Kotlin only embeds watermark)
+        // Use this when the JS layer has already decrypted the image.
+        // ---------------------------------------------------------------------
+        AsyncFunction("embedWatermark") { base64Image: String, userId: String, docId: String ->
+            var cleanBitmap: Bitmap? = null
+            var watermarkedBitmap: Bitmap? = null
+
+            try {
+                // 1. Decode the clean base64 image directly
+                val imageBytes = Base64.decode(base64Image, Base64.DEFAULT)
+                if (imageBytes.isEmpty()) {
+                    throw Exception("Empty image data received")
+                }
+
+                // 2. Parse into Bitmap
+                cleanBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                    ?: throw Exception("Failed to decode image bitmap (size=${imageBytes.size})")
+
+                // 3. Embed Spread-Spectrum Watermark
+                watermarkedBitmap = SpreadSpectrumWatermark.embed(cleanBitmap, userId, docId)
+
+                // 4. Compress to JPEG
+                val outputStream = ByteArrayOutputStream()
+                watermarkedBitmap.compress(Bitmap.CompressFormat.JPEG, 92, outputStream)
+                val outputBytes = outputStream.toByteArray()
+
+                return@AsyncFunction Base64.encodeToString(outputBytes, Base64.NO_WRAP)
+
+            } catch (e: Exception) {
+                throw Exception("Watermark embed failed: ${e.message}")
+            } finally {
+                if (cleanBitmap?.isRecycled == false) cleanBitmap.recycle()
+                if (watermarkedBitmap?.isRecycled == false) watermarkedBitmap.recycle()
             }
         }
 

@@ -23,7 +23,15 @@ import {
     AppState,
     NativeModules
 } from 'react-native';
-const { SecureWatermark } = NativeModules;
+
+// SecureWatermark is an Expo Module (not a classic NativeModule), so we must use requireNativeModule
+let SecureWatermark = null;
+try {
+    const { requireNativeModule } = require('expo-modules-core');
+    SecureWatermark = requireNativeModule('SecureWatermark');
+} catch (e) {
+    console.warn('[Viewer] SecureWatermark native module not available:', e.message);
+}
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -130,21 +138,19 @@ const ViewerScreen = ({ route, navigation }) => {
     useEffect(() => {
         const initViewer = async () => {
             try {
-                // Enable OS-level screen protection
-                if (Platform.OS === 'android') {
-                    await enableSecureMode();
-                    
-                    // Hardware Mirroring check (scrcpy/Miracast)
-                    if (SecureWatermark && SecureWatermark.isScreenBeingMirrored) {
-                        const isMirroring = await SecureWatermark.isScreenBeingMirrored();
-                        if (isMirroring) {
-                            Alert.alert('Screen Mirroring Detected', 'Content hidden for security.');
-                            logSecurityIncident('screen_recording');
-                            navigation.goBack();
-                            return;
-                        }
+                // DRM: usePreventScreenCapture() is already active via the hook at component level.
+                // Additional check: Hardware Mirroring (scrcpy/Miracast)
+                if (Platform.OS === 'android' && SecureWatermark && SecureWatermark.isScreenBeingMirrored) {
+                    const isMirroring = await SecureWatermark.isScreenBeingMirrored();
+                    if (isMirroring) {
+                        Alert.alert('Screen Mirroring Detected', 'Content hidden for security.');
+                        logSecurityIncident('screen_recording');
+                        navigation.goBack();
+                        return;
                     }
-                } else if (Platform.OS === 'ios') {
+                }
+                
+                if (Platform.OS === 'ios') {
                     startScreenshotDetection(
                         // Screenshot detected - blur immediately, then log and alert
                         async () => {
@@ -222,26 +228,33 @@ const ViewerScreen = ({ route, navigation }) => {
                         let decryptedBase64;
                         
                         if (isImage) {
-                            // OPTION D: Render-Time Spread Spectrum
-                            // 1. Convert Blob to Base64 to pass over JNI bridge without crashing
-                            const encryptedBase64 = await new Promise((resolve, reject) => {
-                                const reader = new FileReader();
-                                reader.onerror = reject;
-                                reader.onload = () => resolve(reader.result.split(',')[1]);
-                                reader.readAsDataURL(blob);
-                            });
+                            // Step 1: Decrypt in JS (proven working path)
+                            console.log('[Viewer] blob type:', typeof blob, 'blob size:', blob?.size, 'blob type:', blob?.type);
+                            const encryptedBuffer = await new Response(blob).arrayBuffer();
+                            console.log('[Viewer] encryptedBuffer byteLength:', encryptedBuffer?.byteLength);
+                            const encryptedBytes = new Uint8Array(encryptedBuffer);
+                            console.log('[Viewer] encryptedBytes length:', encryptedBytes?.length, 'first4:', encryptedBytes?.slice(0, 4));
+                            const rawBase64 = await decryptData(encryptedBytes, aesKeyHex);
+                            console.log('[Viewer] rawBase64 type:', typeof rawBase64, 'length:', rawBase64?.length, 'first80:', rawBase64?.substring(0, 80));
                             
-                            // 2. Decrypt & Embed natively in Kotlin (Zero JS Heap Exposure)
-                            decryptedBase64 = await SecureWatermark.renderSecureImage(
-                                encryptedBase64,
-                                aesKeyHex,
-                                recipientEmail,
-                                doc.id
-                            );
+                            // Step 2: Strip legacy LSB delimiter if present
+                            const cleanBase64 = getCleanImageBase64(rawBase64);
                             
-                            console.log(`[Viewer] Render-Time Spread Spectrum embedded in Kotlin`);
+                            console.log('[Viewer] cleanBase64 length:', cleanBase64?.length, 'first80:', cleanBase64?.substring(0, 80));
                             
-                            // HMAC validation is skipped for images since we dynamically generated the watermark
+                            if (SecureWatermark) {
+                                // Step 3: Pass clean base64 to Kotlin for Spread Spectrum embedding
+                                decryptedBase64 = await SecureWatermark.embedWatermark(
+                                    cleanBase64,
+                                    recipientEmail,
+                                    doc.id
+                                );
+                                console.log('[Viewer] Spread Spectrum watermark embedded via Kotlin');
+                            } else {
+                                // Fallback: no watermark, just display
+                                console.warn('[Viewer] SecureWatermark unavailable, displaying without forensic watermark');
+                                decryptedBase64 = cleanBase64;
+                            }
                         } else {
                             // Legacy/PDF decryption in JS
                             // 2. Convert Blob directly to Uint8Array 
