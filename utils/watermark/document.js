@@ -98,16 +98,30 @@ export const embedDocumentWatermark = (fileData, fileExtension, payload) => {
     const ext = fileExtension.toLowerCase().replace('.', '');
 
     if (ext === 'docx') {
-        return embedDocx(fileData, zwPayload);
+        const bytes = embedDocx(fileData, zwPayload);
+        return encodeBase64(bytes);
     }
     if (ext === 'pdf') {
-        return embedPdf(fileData, zwPayload);
+        const bytes = embedPdf(fileData, zwPayload);
+        return encodeBase64(bytes);
     }
     if (ext === 'txt') {
-        return embedTxt(fileData, zwPayload);
+        const result = embedTxt(fileData, zwPayload);
+        return result instanceof Uint8Array ? encodeBase64(result) : result;
     }
 
     return fileData; // unsupported format — pass through
+};
+
+const encodeBase64 = (bytes) => {
+    let binary = '';
+    const len = bytes.byteLength;
+    // Chunking to avoid stack overflow on large arrays
+    const chunkSize = 16384; 
+    for (let i = 0; i < len; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + chunkSize, len)));
+    }
+    return (global.btoa || btoa)(binary);
 };
 
 const embedDocx = (fileData, zwPayload) => {

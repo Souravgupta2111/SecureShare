@@ -132,6 +132,14 @@ object SpreadSpectrumWatermark {
 
         // Apply Histogram Normalization to thwart contrast/lighting filters
         val normalized = histogramNormalize(luma)
+        
+        // Zero-Mean Shift: Critical for isolating the PRNG signal from image content
+        var mean = 0f
+        for (v in normalized) mean += v
+        mean /= normalized.size
+        for (i in normalized.indices) {
+            normalized[i] -= mean
+        }
 
         var bestId: String? = null
         var bestScore = 0f

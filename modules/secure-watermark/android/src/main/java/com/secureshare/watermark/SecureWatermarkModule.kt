@@ -217,7 +217,12 @@ class SecureWatermarkModule : Module() {
         }
         
         // Ensure legacy LSB definitions are kept to prevent missing module crashes on startup
-        AsyncFunction("embedLSB") { _: String, _: String -> "" }
+        // LEGACY MOCK IMPLEMENTATIONS (To prevent JS crashes when switching from Option B to Option D)
+        AsyncFunction("embedLSB") { base64Image: String, _: String -> 
+            // Option D handles embedding at Render-Time.
+            // Upload the pristine unaltered image base64.
+            return@AsyncFunction base64Image 
+        }
         AsyncFunction("extractLSB") { _: String -> null as String? }
         AsyncFunction("verifyLSB") { _: String -> false }
         

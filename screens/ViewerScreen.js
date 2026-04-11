@@ -258,20 +258,28 @@ const ViewerScreen = ({ route, navigation }) => {
                         } else {
                             // Legacy/PDF decryption in JS
                             // 2. Convert Blob directly to Uint8Array 
+                            console.log('[Viewer] Non-Image blob size:', blob?.size);
                             const encryptedBuffer = await new Response(blob).arrayBuffer();
                             const encryptedBytes = new Uint8Array(encryptedBuffer);
+                            console.log('[Viewer] Non-Image encryptedBytes length:', encryptedBytes?.length);
                             
                             // 5. Decrypt document content with the AES key
                             decryptedBase64 = await decryptData(encryptedBytes, aesKeyHex);
+                            console.log('[Viewer] Non-Image decryptedBase64 length:', decryptedBase64?.length, 'first40:', decryptedBase64?.substring(0, 40));
                             
                             // SECURITY: Verify text/pdf watermark HMAC signature
-                            const extractedPayload = extractDocumentWatermark(decryptedBase64, fileExt);
-                            if (extractedPayload) {
-                                const { valid, error } = await verifyWatermarkSignature(extractedPayload, aesKeyHex);
-                                if (!valid) {
-                                    console.warn('[Viewer] Watermark signature invalid:', error);
-                                    setWatermarkTampered(true);
+                            try {
+                                const extractedPayload = extractDocumentWatermark(decryptedBase64, fileExt);
+                                console.log('[Viewer] Non-Image extractedPayload:', extractedPayload);
+                                if (extractedPayload) {
+                                    const { valid, error } = await verifyWatermarkSignature(extractedPayload, aesKeyHex);
+                                    if (!valid) {
+                                        console.warn('[Viewer] Watermark signature invalid:', error);
+                                        setWatermarkTampered(true);
+                                    }
                                 }
+                            } catch (extractionErr) {
+                                console.error('[Viewer] Failed to extract document watermark:', extractionErr.message);
                             }
                         }
 
