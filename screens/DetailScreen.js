@@ -80,12 +80,19 @@ const DetailScreen = ({ route, navigation }) => {
         return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
 
+    // Derive file type from both local (camelCase) and cloud (snake_case) properties
+    const derivedMimeType = doc.mimeType || doc.mime_type || 'application/octet-stream';
+    const derivedFileType = doc.fileType || (
+        derivedMimeType.startsWith('image/') ? 'image' :
+        (derivedMimeType === 'application/pdf' || derivedMimeType.includes('pdf')) ? 'pdf' : 'document'
+    );
+
     const getThumbnail = () => {
-        if (doc.fileType === 'image' && docData) {
+        if (derivedFileType === 'image' && docData) {
             const displayData = docData.watermarkedData || docData.originalData;
             if (!displayData) return null;
             const cleanBase64 = getCleanImageBase64(displayData);
-            return { uri: `data:${doc.mimeType};base64,${cleanBase64}` };
+            return { uri: `data:${derivedMimeType};base64,${cleanBase64}` };
         }
         return null;
     };
@@ -103,10 +110,12 @@ const DetailScreen = ({ route, navigation }) => {
                 {/* Section 1: Preview Card */}
                 <Pressable
                     style={styles.previewCard}
-                    onPress={() => navigation.navigate('ViewerScreen', { document: doc })} // Wait, screen name in Stack is 'ViewerScreen'? 
-                // In App.js we will define 'ViewerScreen' inside the Home Stack.
+                    onPress={() => navigation.navigate('ViewerScreen', {
+                        document: doc,
+                        documentId: doc.uuid || doc.id,
+                    })}
                 >
-                    {doc.fileType === 'image' ? (
+                    {derivedFileType === 'image' ? (
                         <Image source={getThumbnail()} style={styles.previewImage} resizeMode="cover" />
                     ) : (
                         <View style={styles.docPlaceholder}>

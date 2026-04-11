@@ -20,8 +20,10 @@ import {
     ActivityIndicator,
     Platform,
     Alert,
-    AppState
+    AppState,
+    NativeModules
 } from 'react-native';
+const { SecureWatermark } = NativeModules;
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -41,6 +43,7 @@ import { decryptData } from '../utils/crypto';
 import { decryptDocumentKey } from '../utils/CryptoService';
 import { enableSecureMode, disableSecureMode, startScreenshotDetection, stopScreenshotDetection } from '../native/SecurityBridge';
 import { generateDeviceHash } from '../utils/deviceSecurity';
+import { usePreventScreenCapture } from 'expo-screen-capture';
 import Pdf from 'react-native-pdf';
 
 // Security: Clear clipboard to prevent data exfiltration
@@ -56,6 +59,9 @@ const ViewerScreen = ({ route, navigation }) => {
     const { document: docMetadata, documentId, accessTokenId, recipientEmail: routeEmail } = route.params;
     const insets = useSafeAreaInsets();
     const { user } = useAuth();
+    
+    // Enable strict native DRM (Screen Capture Prevention)
+    usePreventScreenCapture();
 
     const [viewSeconds, setViewSeconds] = useState(0);
     const [documentData, setDocumentData] = useState(null);
@@ -127,6 +133,17 @@ const ViewerScreen = ({ route, navigation }) => {
                 // Enable OS-level screen protection
                 if (Platform.OS === 'android') {
                     await enableSecureMode();
+                    
+                    // Hardware Mirroring check (scrcpy/Miracast)
+                    if (SecureWatermark && SecureWatermark.isScreenBeingMirrored) {
+                        const isMirroring = await SecureWatermark.isScreenBeingMirrored();
+                        if (isMirroring) {
+                            Alert.alert('Screen Mirroring Detected', 'Content hidden for security.');
+                            logSecurityIncident('screen_recording');
+                            navigation.goBack();
+                            return;
+                        }
+                    }
                 } else if (Platform.OS === 'ios') {
                     startScreenshotDetection(
                         // Screenshot detected - blur immediately, then log and alert
@@ -146,12 +163,20 @@ const ViewerScreen = ({ route, navigation }) => {
                     );
                 }
 
+                // Normalize document metadata for consistent property access
+                const doc = {
+                    ...docMetadata,
+                    id: docMetadata.id || docMetadata.uuid,
+                    mimeType: docMetadata.mimeType || docMetadata.mime_type,
+                    filePath: docMetadata.filePath || docMetadata.file_path,
+                };
+
                 // Generate device hash for validation
                 const deviceHash = await generateDeviceHash();
 
                 // Validate access for online documents
-                if (docMetadata?.file_path && accessTokenId) {
-                    const { valid, error } = await validateAccessGrant(accessTokenId, docMetadata.id, deviceHash);
+                if (doc.filePath && accessTokenId) {
+                    const { valid, error } = await validateAccessGrant(accessTokenId, doc.id, deviceHash);
                     if (!valid) {
                         Alert.alert(
                             'Access Denied',
@@ -163,7 +188,7 @@ const ViewerScreen = ({ route, navigation }) => {
                 }
 
                 // Check expiry for local documents
-                if (docMetadata?.expiresAt && docMetadata.expiresAt < Date.now()) {
+                if (doc.expiresAt && doc.expiresAt < Date.now()) {
                     Alert.alert(
                         'Document Expired',
                         'This document has expired and is no longer accessible.',
@@ -173,95 +198,77 @@ const ViewerScreen = ({ route, navigation }) => {
                 }
 
                 // Load document data (local or online)
-                if (docMetadata) {
+                if (doc) {
                     let fullDoc = null;
 
-                    if (docMetadata.file_path) {
+                    if (doc.filePath) {
                         // --- ONLINE MODE ---
                         // 1. Download Blob (Encrypted)
-                        const { data: blob, error: dlError } = await downloadSecureBlob(docMetadata.file_path);
+                        const { data: blob, error: dlError } = await downloadSecureBlob(doc.filePath);
                         if (dlError) throw dlError;
 
-                        // 2. Convert Blob directly to Uint8Array (avoids base64 round-trip, saves ~33% memory)
-                        const encryptedBuffer = await new Response(blob).arrayBuffer();
-                        const encryptedBytes = new Uint8Array(encryptedBuffer);
-
                         // 3. Get Key
-                        const { data: keyData, error: keyError } = await getDocumentKey(docMetadata.id);
+                        const { data: keyData, error: keyError } = await getDocumentKey(doc.id);
                         if (!keyData || keyError) {
                             console.error('[Viewer] Key fetch failed:', keyError);
-                            throw new Error(
-                                `Decryption key not found for this document.\n\n` +
-                                `This can happen if:\n` +
-                                `• The document owner hasn't shared the key with you\n` +
-                                `• The sharing was incomplete\n\n` +
-                                `Ask the document owner to re-share this document with you.`
-                            );
+                            throw new Error('Decryption key not found for this document. Ask owner to re-share.');
                         }
 
                         // 4. Decrypt AES key via CryptoService (handles chunked + legacy key formats)
                         const aesKeyHex = await decryptDocumentKey(keyData.encrypted_key);
 
-                        // 5. Decrypt document content with the AES key
-                        const decryptedBase64 = await decryptData(encryptedBytes, aesKeyHex);
-
-                        // SECURITY: Verify watermark HMAC signature
-                        try {
-                            const isImage = docMetadata.mime_type?.startsWith('image/');
-                            const fileExt = docMetadata.filename?.split('.').pop() || 'txt';
-
-                            // Extract watermark from decrypted content
-                            let extractedPayload = null;
-                            if (isImage) {
-                                // Use async extraction which tries native LSB first, then falls back to delimiter
-                                const { data: payload, method } = await extractImageWatermarkAsync(decryptedBase64);
-                                extractedPayload = payload;
-                                if (payload) {
-                                    console.log(`[Viewer] Watermark extracted via ${method} method`);
-                                }
-                            } else {
-                                extractedPayload = extractDocumentWatermark(decryptedBase64, fileExt);
-                            }
-
+                        const isImage = doc.mimeType?.startsWith('image/');
+                        const fileExt = doc.filename?.split('.').pop() || 'txt';
+                        let decryptedBase64;
+                        
+                        if (isImage) {
+                            // OPTION D: Render-Time Spread Spectrum
+                            // 1. Convert Blob to Base64 to pass over JNI bridge without crashing
+                            const encryptedBase64 = await new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onerror = reject;
+                                reader.onload = () => resolve(reader.result.split(',')[1]);
+                                reader.readAsDataURL(blob);
+                            });
+                            
+                            // 2. Decrypt & Embed natively in Kotlin (Zero JS Heap Exposure)
+                            decryptedBase64 = await SecureWatermark.renderSecureImage(
+                                encryptedBase64,
+                                aesKeyHex,
+                                recipientEmail,
+                                doc.id
+                            );
+                            
+                            console.log(`[Viewer] Render-Time Spread Spectrum embedded in Kotlin`);
+                            
+                            // HMAC validation is skipped for images since we dynamically generated the watermark
+                        } else {
+                            // Legacy/PDF decryption in JS
+                            // 2. Convert Blob directly to Uint8Array 
+                            const encryptedBuffer = await new Response(blob).arrayBuffer();
+                            const encryptedBytes = new Uint8Array(encryptedBuffer);
+                            
+                            // 5. Decrypt document content with the AES key
+                            decryptedBase64 = await decryptData(encryptedBytes, aesKeyHex);
+                            
+                            // SECURITY: Verify text/pdf watermark HMAC signature
+                            const extractedPayload = extractDocumentWatermark(decryptedBase64, fileExt);
                             if (extractedPayload) {
-                                // Verify HMAC signature using the decryption key
-                                const { valid, error } = await verifyWatermarkSignature(
-                                    extractedPayload,
-                                    aesKeyHex
-                                );
-
+                                const { valid, error } = await verifyWatermarkSignature(extractedPayload, aesKeyHex);
                                 if (!valid) {
                                     console.warn('[Viewer] Watermark signature invalid:', error);
                                     setWatermarkTampered(true);
-
-                                    // Log tamper detection as security event
-                                    await queueSecurityEvent({
-                                        document_id: docMetadata.id,
-                                        access_token_id: accessTokenId,
-                                        recipient_email: recipientEmail,
-                                        event_type: 'watermark_tamper',
-                                        platform: Platform.OS,
-                                        blocked: false,
-                                        metadata: { error, payload: extractedPayload?.substring(0, 100) }
-                                    });
-                                } else {
-                                    console.log('[Viewer] Watermark signature verified successfully');
                                 }
-                            } else {
-                                console.warn('[Viewer] No watermark found in document');
                             }
-                        } catch (verifyError) {
-                            console.warn('[Viewer] Watermark verification error:', verifyError);
-                            // Don't block viewing, but log the issue
                         }
 
                         fullDoc = {
-                            ...docMetadata,
+                            ...doc,
                             originalData: decryptedBase64
                         };
                     } else {
                         // --- LOCAL MODE ---
-                        fullDoc = await storage.getDocumentWithData(docMetadata.uuid);
+                        fullDoc = await storage.getDocumentWithData(doc.uuid || doc.id);
                     }
 
                     if (fullDoc) setDocumentData(fullDoc);
@@ -274,7 +281,7 @@ const ViewerScreen = ({ route, navigation }) => {
 
                 // Start tracking  
                 heartbeat.startTracking(docUuid, recipientEmail);
-                security.startMonitoring(docUuid, recipientEmail, docMetadata?.filename || 'document');
+                security.startMonitoring(docUuid, recipientEmail, doc.filename || 'document');
 
             } catch (e) {
                 console.error('Viewer init error:', e);
@@ -356,15 +363,23 @@ const ViewerScreen = ({ route, navigation }) => {
     };
 
     const getSource = () => {
-        if (documentData && docMetadata?.fileType === 'pdf' && documentData.originalData) {
-            // PDF from React Native PDF needs source={uri: ...} with base64
-            return { uri: `data:${docMetadata.mimeType};base64,${documentData.originalData}` };
+        // Derive file type & mime type from both local (camelCase) and cloud (snake_case) properties
+        const mimeType = docMetadata?.mimeType || docMetadata?.mime_type || 'application/octet-stream';
+        let fType = docMetadata?.fileType;
+        if (!fType) {
+            if (mimeType.startsWith('image/')) fType = 'image';
+            else if (mimeType === 'application/pdf' || mimeType.includes('pdf')) fType = 'pdf';
+            else fType = 'document';
         }
-        else if (documentData && docMetadata?.fileType === 'image') {
+
+        if (documentData && fType === 'pdf' && documentData.originalData) {
+            return { uri: `data:${mimeType};base64,${documentData.originalData}` };
+        }
+        else if (documentData && fType === 'image') {
             const displayData = documentData.watermarkedData || documentData.originalData;
             if (!displayData) return null;
             const cleanBase64 = getCleanImageBase64(displayData);
-            return { uri: `data:${docMetadata.mimeType};base64,${cleanBase64}` };
+            return { uri: `data:${mimeType};base64,${cleanBase64}` };
         }
         return null; // fallback
     };

@@ -171,60 +171,48 @@ export const isValidWrappedMessage = (fullMessage) => {
 /** Get clean image data without watermark delimiter */
 export const getCleanImageBase64 = (imageBase64) => {
     if (!imageBase64) return '';
-    if (imageBase64.includes(IMAGE_WATERMARK_DELIMITER)) {
-        // The watermark was appended as btoa(DELIMITER + payload + END_DELIMITER)
-        // We need to find where the encoded payload starts in the base64 string.
-        // Use the stepped search to find the exact encoded chunk boundary.
-        const size = getChunkSizeForWatermark(imageBase64);
-        if (size > 0) {
-            // The encoded payload length is the base64 encoding of DELIMITER+payload+END.
-            // embedImageWatermark appends btoa(wrapped) directly, so we know the encoded
-            // payload is a clean base64 suffix. Find its exact start by checking that
-            // the remainder (before the suffix) is still valid base64.
-            const candidate = imageBase64.slice(0, -size);
-            // Verify the candidate doesn't clip valid data (must end on a base64 boundary)
-            if (candidate.length % 4 === 0 || candidate.endsWith('=')) {
-                return candidate;
-            }
-            // Align to nearest 4-char base64 boundary (trim at most 3 extra chars)
-            const aligned = candidate.slice(0, candidate.length - (candidate.length % 4));
-            return aligned;
-        }
+    // The watermark payload begins with '###SWMK##' which base64 encodes exactly to 'IyMjU1dNSyMj' (3-byte aligned!)
+    const magic = 'IyMjU1dNSyMj';
+    
+    // Look for the magic string near the end (search in the last 2000 chars for efficiency)
+    const searchArea = imageBase64.length > 2000 ? imageBase64.substring(imageBase64.length - 2000) : imageBase64;
+    const idx = searchArea.lastIndexOf(magic);
+    
+    if (idx !== -1) {
+        // Calculate original exact index in full string
+        const globalIdx = imageBase64.length > 2000 ? (imageBase64.length - 2000) + idx : idx;
+        // The original image base64 ends exactly before the appended payload
+        return imageBase64.substring(0, globalIdx);
     }
+    
     return imageBase64;
 };
 
 // --- INTERNAL HELPERS ---
 
 const findBase64WrappedPayload = (imageBase64) => {
-    if (!imageBase64 || imageBase64.length < 100) return null;
-    const minChunkSize = 50;
-    const maxChunkSize = 500;
-
-    for (let size = minChunkSize; size <= maxChunkSize; size += 10) {
-        const chunk = imageBase64.slice(-size);
+    if (!imageBase64) return null;
+    const magic = 'IyMjU1dNSyMj';
+    
+    const searchArea = imageBase64.length > 2000 ? imageBase64.substring(imageBase64.length - 2000) : imageBase64;
+    const idx = searchArea.lastIndexOf(magic);
+    
+    if (idx !== -1) {
+        const globalIdx = imageBase64.length > 2000 ? (imageBase64.length - 2000) + idx : idx;
+        const encodedPayload = imageBase64.substring(globalIdx);
+        
         try {
-            const decoded = (global.atob || atob)(chunk);
-            if (decoded.startsWith(IMAGE_WATERMARK_DELIMITER) &&
-                decoded.includes(IMAGE_WATERMARK_END)) {
+            const decoded = (global.atob || atob)(encodedPayload);
+            if (decoded.includes(IMAGE_WATERMARK_DELIMITER) && decoded.includes(IMAGE_WATERMARK_END)) {
                 const startIdx = decoded.indexOf(IMAGE_WATERMARK_DELIMITER) + IMAGE_WATERMARK_DELIMITER.length;
                 const endIdx = decoded.indexOf(IMAGE_WATERMARK_END);
-                return decoded.substring(startIdx, endIdx);
+                if (endIdx > startIdx) {
+                    return decoded.substring(startIdx, endIdx);
+                }
             }
-        } catch (e) { /* not valid base64 */ }
+        } catch (e) { 
+            // Invalid base64
+        }
     }
     return null;
-};
-
-const getChunkSizeForWatermark = (imageBase64) => {
-    const minChunkSize = 50;
-    const maxChunkSize = 500;
-    for (let size = minChunkSize; size <= maxChunkSize; size += 10) {
-        const chunk = imageBase64.slice(-size);
-        try {
-            const decoded = (global.atob || atob)(chunk);
-            if (decoded.startsWith(IMAGE_WATERMARK_DELIMITER)) return size;
-        } catch (e) { /* continue */ }
-    }
-    return minChunkSize;
 };

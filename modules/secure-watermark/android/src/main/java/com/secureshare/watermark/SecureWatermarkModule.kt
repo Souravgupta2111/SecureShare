@@ -1,126 +1,184 @@
 package com.secureshare.watermark
-import expo.modules.kotlin.modules.Module
-import expo.modules.kotlin.modules.ModuleDefinition
+
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import expo.modules.kotlin.modules.Module
+import expo.modules.kotlin.modules.ModuleDefinition
+import org.json.JSONArray
 import java.io.ByteArrayOutputStream
+import java.util.Arrays
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import android.content.Context
+import android.hardware.display.DisplayManager
 
 class SecureWatermarkModule : Module() {
+
+    // Helper to safely convert hex string to byte array
+    private fun hexStringToByteArray(s: String): ByteArray {
+        val len = s.length
+        val data = ByteArray(len / 2)
+        var i = 0
+        while (i < len) {
+            data[i / 2] = ((Character.digit(s[i], 16) shl 4) + Character.digit(s[i + 1], 16)).toByte()
+            i += 2
+        }
+        return data
+    }
+
     override fun definition() = ModuleDefinition {
         Name("SecureWatermark")
 
-        // Async function to embed watermark
-        AsyncFunction("embedLSB") { imageBase64: String, watermarkText: String ->
+        // ---------------------------------------------------------------------
+        // THE RENDER-TIME ENGINE
+        // AES-256-GCM local decryption -> Spread Spectrum Embed -> Secure Render
+        // ---------------------------------------------------------------------
+        AsyncFunction("renderSecureImage") { encryptedInput: String, aesKeyHex: String, userId: String, docId: String ->
+            var cleanUtf8Bytes: ByteArray? = null
+            var imageBytes: ByteArray? = null
+            var cleanBitmap: Bitmap? = null
+            var watermarkedBitmap: Bitmap? = null
+
             try {
-                val decodedBytes = Base64.decode(imageBase64, Base64.DEFAULT)
-                if (decodedBytes.isEmpty()) {
-                    throw Exception("Invalid image data: empty base64")
+                // 1. Decode the input layer
+                val cipherBuffer = Base64.decode(encryptedInput, Base64.DEFAULT)
+                val keyBytes = hexStringToByteArray(aesKeyHex)
+
+                // 2. Separate IV (first 12 bytes) from GCM ciphertext
+                if (cipherBuffer.size < 12) {
+                    throw Exception("Ciphertext too short to contain IV")
                 }
+                val iv = cipherBuffer.copyOfRange(0, 12)
+                val encryptedBytes = cipherBuffer.copyOfRange(12, cipherBuffer.size)
 
-                val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                    ?: throw Exception("Failed to decode image bitmap")
+                // 3. AES-GCM Decryption (NoPadding format mapped to JS WebCrypto)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                val secretKey = SecretKeySpec(keyBytes, "AES")
+                val gcmSpec = GCMParameterSpec(128, iv)
+                cipher.init(Cipher.DECRYPT_MODE, secretKey, gcmSpec)
+                
+                cleanUtf8Bytes = cipher.doFinal(encryptedBytes)
+                
+                // 4. Decode internal Base64 (JS encrypts the Base64 string representation)
+                val base64String = String(cleanUtf8Bytes, Charsets.UTF_8)
+                imageBytes = Base64.decode(base64String, Base64.DEFAULT)
+                
+                // 5. Decode Image Pixel Array
+                cleanBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+                    ?: throw Exception("Failed to decode native image bitmap")
 
-                val watermarkedBitmap = Steganography.embed(bitmap, watermarkText)
-                    ?: throw Exception("Failed to embed watermark: image too large or message too long")
+                // 6. Embed Spread-Spectrum Watermark IMMEDIATELY into in-memory bitmap
+                watermarkedBitmap = SpreadSpectrumWatermark.embed(cleanBitmap, userId, docId)
 
+                // 7. Compress into JPEG (Calibration Quality: 92)
                 val outputStream = ByteArrayOutputStream()
-                watermarkedBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+                watermarkedBitmap.compress(Bitmap.CompressFormat.JPEG, 92, outputStream)
                 val outputBytes = outputStream.toByteArray()
 
-                // Recycle bitmaps to free memory
-                if (!bitmap.isRecycled) bitmap.recycle()
-                if (!watermarkedBitmap.isRecycled) watermarkedBitmap.recycle()
+                // Return final watermarked safe buffer to JS
+                return@AsyncFunction Base64.encodeToString(outputBytes, Base64.NO_WRAP)
 
-                Base64.encodeToString(outputBytes, Base64.NO_WRAP)
             } catch (e: Exception) {
-                throw Exception("Failed to embed watermark: ${e.message}")
+                throw Exception("Secure render failed: ${e.message}")
+            } finally {
+                // 8. Explicitly ZERO OUT unencrypted native memory structures
+                cleanUtf8Bytes?.let { Arrays.fill(it, 0.toByte()) }
+                imageBytes?.let { Arrays.fill(it, 0.toByte()) }
+                
+                // Prompt garbage collection on pristine un-watermarked pixels
+                if (cleanBitmap?.isRecycled == false) {
+                    cleanBitmap.recycle()
+                }
+                if (watermarkedBitmap?.isRecycled == false) {
+                    watermarkedBitmap.recycle()
+                }
             }
         }
 
-        // Async function to extract watermark - returns FULL message with delimiters
-        AsyncFunction("extractLSB") { imageBase64: String ->
+        // ---------------------------------------------------------------------
+        // OFFLINE CAMERA DETECTOR
+        // ---------------------------------------------------------------------
+        AsyncFunction("detectLeaker") { base64Image: String, docId: String, candidatesJson: String ->
             try {
-                val decodedBytes = Base64.decode(imageBase64, Base64.DEFAULT)
-                if (decodedBytes.isEmpty()) {
+                val bytes = Base64.decode(base64Image, Base64.DEFAULT)
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: throw Exception("Failed to parse suspect image")
+
+                val jsonArray = JSONArray(candidatesJson)
+                val candidates = mutableListOf<String>()
+                for (i in 0 until jsonArray.length()) {
+                    candidates.add(jsonArray.getString(i))
+                }
+
+                // Execute Normalized Cross-Correlation Scan
+                val result = SpreadSpectrumWatermark.detectUserId(bitmap, candidates)
+
+                if (bitmap.isRecycled == false) {
+                    bitmap.recycle()
+                }
+
+                if (result != null) {
+                    // Return map literal mimicking WritableNativeMap
+                    return@AsyncFunction mapOf(
+                        "userId" to result.userId,
+                        "confidence" to result.confidence
+                    )
+                } else {
                     return@AsyncFunction null
                 }
 
-                val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                    ?: return@AsyncFunction null
-
-                val result = Steganography.extract(bitmap)
-
-                // Recycle bitmap to free memory
-                if (!bitmap.isRecycled) bitmap.recycle()
-
-                // Return null if no watermark found, otherwise return full message
-                result
             } catch (e: Exception) {
-                // Return null on any error - extraction failures are expected for non-watermarked images
-                null
+                throw Exception("Forensic detection failed: ${e.message}")
             }
         }
-
-        // Async function to verify watermark presence
-        AsyncFunction("verifyLSB") { imageBase64: String ->
+        
+        // ---------------------------------------------------------------------
+        // STEP 1: DETECT DOCUMENT ID
+        // ---------------------------------------------------------------------
+        AsyncFunction("detectDocumentId") { base64Image: String, docIdsJson: String ->
             try {
-                val decodedBytes = Base64.decode(imageBase64, Base64.DEFAULT)
-                if (decodedBytes.isEmpty()) {
-                    return@AsyncFunction false
+                val bytes = Base64.decode(base64Image, Base64.DEFAULT)
+                val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    ?: throw Exception("Failed to parse suspect image")
+
+                val jsonArray = JSONArray(docIdsJson)
+                val allDocIds = mutableListOf<String>()
+                for (i in 0 until jsonArray.length()) {
+                    allDocIds.add(jsonArray.getString(i))
                 }
 
-                val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                    ?: return@AsyncFunction false
-
-                val result = Steganography.verify(bitmap)
-
-                // Recycle bitmap to free memory
-                if (!bitmap.isRecycled) bitmap.recycle()
-
-                result
+                val docId = SpreadSpectrumWatermark.detectDocId(bitmap, allDocIds)
+                if (bitmap.isRecycled == false) {
+                    bitmap.recycle()
+                }
+                
+                return@AsyncFunction docId
+                
             } catch (e: Exception) {
-                false
+                throw Exception("DocId detection failed: ${e.message}")
             }
         }
-
-        // Legacy synchronous methods (not recommended for large images, but kept for compatibility)
-        Function("embed") { imageBase64: String, watermarkText: String ->
+        
+        // Ensure legacy LSB definitions are kept to prevent missing module crashes on startup
+        AsyncFunction("embedLSB") { _: String, _: String -> "" }
+        AsyncFunction("extractLSB") { _: String -> null as String? }
+        AsyncFunction("verifyLSB") { _: String -> false }
+        
+        // ---------------------------------------------------------------------
+        // STEP 0: SCREEN MIRRORING DRM
+        // ---------------------------------------------------------------------
+        AsyncFunction("isScreenBeingMirrored") {
             try {
-                val decodedBytes = Base64.decode(imageBase64, Base64.DEFAULT)
-                val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                    ?: throw Exception("Failed to decode image")
-
-                val watermarkedBitmap = Steganography.embed(bitmap, watermarkText)
-                    ?: throw Exception("Failed to embed watermark")
-
-                val outputStream = ByteArrayOutputStream()
-                watermarkedBitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
-
-                // Recycle bitmaps
-                if (!bitmap.isRecycled) bitmap.recycle()
-                if (!watermarkedBitmap.isRecycled) watermarkedBitmap.recycle()
-
-                Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+                val displayManager = appContext.reactContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+                if (displayManager != null) {
+                    val displays = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
+                    return@AsyncFunction displays.isNotEmpty()
+                }
+                return@AsyncFunction false
             } catch (e: Exception) {
-                throw Exception("Embed failed: ${e.message}")
-            }
-        }
-
-        Function("verify") { imageBase64: String ->
-            try {
-                val decodedBytes = Base64.decode(imageBase64, Base64.DEFAULT)
-                val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
-                    ?: return@Function false
-
-                val result = Steganography.verify(bitmap)
-
-                // Recycle bitmap
-                if (!bitmap.isRecycled) bitmap.recycle()
-
-                result
-            } catch (e: Exception) {
-                false
+                return@AsyncFunction false
             }
         }
     }

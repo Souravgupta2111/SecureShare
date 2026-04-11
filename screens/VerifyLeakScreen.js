@@ -71,25 +71,28 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                 const res = await ImagePicker.launchImageLibraryAsync({
                     mediaTypes: ['images'],
                     quality: 1,
-                    base64: true, // WARNING: This can crash on large images
                 });
 
                 if (!res.canceled && res.assets && res.assets.length > 0) {
                     const a = res.assets[0];
 
-                    // Safety check (approximate from base64 length or file size if available)
+                    // Safety check (approximate from file size if available)
                     // 15MB limit for safety on JS thread
-                    const size = a.fileSize || (a.base64 ? a.base64.length * 0.75 : 0);
+                    const size = a.fileSize || 0;
                     if (size > 15 * 1024 * 1024) {
                         Alert.alert("File Too Large", "Please select an image under 15MB for verification.");
                         return;
                     }
 
+                    const base64String = await FileSystem.readAsStringAsync(a.uri, {
+                        encoding: 'base64'
+                    });
+
                     fileData = {
                         uri: a.uri,
                         name: a.fileName || 'CHECK_IMAGE.jpg',
                         type: 'image',
-                        base64: a.base64,
+                        base64: base64String,
                         ext: 'jpg'
                     };
                 }
@@ -144,10 +147,46 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
         // Extract
         let extractedUUID = null;
+        let leakerId = null;
+        let confidenceScore = 0;
+        let targetDoc = null;
+
         try {
             if (fileObj.type === 'image') {
-                const extractionResult = await watermark.extractImageWatermarkAsync(fileObj.base64);
-                extractedUUID = extractionResult.data;
+                const { SecureWatermark } = require('react-native').NativeModules;
+                
+                // STEP 1: Two-step forensic scan. First, collect all known local documents.
+                const allDocs = await storage.getAllDocuments();
+                const allDocIds = allDocs.map(d => d.id || d.uuid).filter(Boolean);
+                
+                const detectedDocId = await SecureWatermark.detectDocumentId(
+                    fileObj.base64,
+                    JSON.stringify(allDocIds)
+                );
+                
+                if (detectedDocId) {
+                    extractedUUID = detectedDocId;
+                    targetDoc = await storage.getDocumentByUUID(detectedDocId);
+                    
+                    if (targetDoc) {
+                        // STEP 2: Correlate user ID from known document recipients
+                        const candidates = targetDoc.recipients?.map(r => r.email).filter(Boolean) || [];
+                        if (targetDoc.owner_email) candidates.push(targetDoc.owner_email); // Edgecase: owner leaked it themselves
+                        
+                        if (candidates.length > 0) {
+                            const leakResult = await SecureWatermark.detectLeaker(
+                                fileObj.base64,
+                                detectedDocId,
+                                JSON.stringify(candidates)
+                            );
+                            
+                            if (leakResult && leakResult.confidence > 1.5) {
+                                leakerId = leakResult.userId;
+                                confidenceScore = leakResult.confidence;
+                            }
+                        }
+                    }
+                }
             } else {
                 extractedUUID = watermark.extractDocumentWatermark(fileObj.base64, fileObj.ext);
             }
@@ -162,14 +201,18 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
         // Check DB
         if (extractedUUID) {
-            // Watermark format: "docUUID|email|ts|deviceHash" or "docUUID|email|ts|deviceHash|HMAC"
-            // Extract the document UUID (first segment)
+            // Document text watermark format might split by |
             const docId = extractedUUID.includes('|') ? extractedUUID.split('|')[0] : extractedUUID;
-            const doc = await storage.getDocumentByUUID(docId);
+            const doc = targetDoc || await storage.getDocumentByUUID(docId);
+            
+            // Text legacy leaker fallback
+            if (!leakerId && extractedUUID.includes('|')) {
+                leakerId = extractedUUID.split('|')[1];
+            }
+            
             if (doc) {
-                setResult({ status: 'found', data: doc });
+                setResult({ status: 'found', data: doc, leaker: leakerId, confidence: confidenceScore });
             } else {
-                // UUID found but not in local DB (could be online-only or deleted)
                 setResult({ status: 'not_found' });
             }
         } else {
@@ -244,9 +287,33 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                 <View style={styles.divider} />
                                 <View style={styles.details}>
                                     <Text style={styles.detailRow}><Text style={styles.label}>Document:</Text> {result.data.filename}</Text>
-                                    <Text style={styles.detailRow}><Text style={styles.label}>Shared With:</Text> {result.data.recipients.map(r => r.email).join(', ')}</Text>
-                                    <Text style={styles.detailRow}><Text style={styles.label}>Shared On:</Text> {new Date(result.data.sharedAt).toLocaleDateString()}</Text>
-                                    <Text style={styles.detailRow}><Text style={styles.label}>Status:</Text> {result.data.status.toUpperCase()}</Text>
+                                    <Text style={styles.detailRow}><Text style={styles.label}>Shared With:</Text> {result.data.recipients?.map(r => r.email).join(', ') || 'None'}</Text>
+                                    <Text style={styles.detailRow}><Text style={styles.label}>Shared On:</Text> {new Date(result.data.sharedAt || result.data.created_at).toLocaleDateString()}</Text>
+                                    <Text style={styles.detailRow}><Text style={styles.label}>Status:</Text> {result.data.status?.toUpperCase() || 'ACTIVE'}</Text>
+                                    
+                                    {result.leaker && (() => {
+                                        const getConfidenceLabel = (score) => {
+                                            if (score > 3.0) return { label: 'Very High', color: '#ef4444' };
+                                            if (score > 2.0) return { label: 'High', color: '#f97316' };
+                                            if (score > 1.5) return { label: 'Medium', color: '#eab308' };
+                                            return { label: 'Low', color: '#6b7280' };
+                                        };
+                                        const conf = getConfidenceLabel(result.confidence);
+                                        return (
+                                            <>
+                                                <View style={[styles.divider, { marginTop: 12, marginBottom: 12, backgroundColor: 'rgba(255,100,100,0.2)' }]} />
+                                                <Text style={[styles.detailRow, { color: theme.colors.status.error, fontWeight: 'bold' }]}>
+                                                    <Ionicons name="warning" size={16} color={theme.colors.status.error} /> FORENSIC MATCH
+                                                </Text>
+                                                <Text style={styles.detailRow}><Text style={styles.label}>Target ID:</Text> <Text style={{ color: '#fff' }}>{result.leaker}</Text></Text>
+                                                {result.confidence > 0 && (
+                                                    <Text style={styles.detailRow}>
+                                                        <Text style={styles.label}>Confidence:</Text> {result.confidence.toFixed(2)} (<Text style={{ color: conf.color }}>{conf.label}</Text>)
+                                                    </Text>
+                                                )}
+                                            </>
+                                        );
+                                    })()}
                                 </View>
                                 <Pressable onPress={() => navigation.navigate('Home', { screen: 'Detail', params: { document: result.data } })}>
                                     <Text style={styles.link}>View Full Details →</Text>

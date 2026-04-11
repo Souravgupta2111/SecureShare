@@ -163,12 +163,10 @@ export const decryptData = async (encryptedInput: string | Uint8Array | ArrayBuf
         { name: 'AES-GCM', iv, tagLength: 128 }, cryptoKey, encrypted
     );
 
-    const bytes = new Uint8Array(decrypted);
-    let binaryString = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-        binaryString += String.fromCharCode(bytes[i]);
-    }
-    return (global.btoa || btoa)(binaryString);
+    // Since `encryptData` uses `new TextEncoder().encode(data)` to convert the Base64 
+    // string into UTF-8 bytes before encryption, we must decode the bytes back to 
+    // the original string using `TextDecoder`, preventing double base64-encoding.
+    return new TextDecoder().decode(decrypted);
 };
 
 /** Check if file size is within safe processing limits (15 MB) */

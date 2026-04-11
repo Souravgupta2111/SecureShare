@@ -274,7 +274,7 @@ const HomeScreen = ({ navigation }) => {
                     try {
                         if (doc?.isCloud) {
                             // Cloud document - use Supabase
-                            await deleteCloudDocument(uuid, doc.storage_path);
+                            await deleteCloudDocument(uuid, doc.storage_path || doc.file_path);
                         } else if (permanent) {
                             await storage.permanentlyDeleteDocument(uuid);
                         } else {

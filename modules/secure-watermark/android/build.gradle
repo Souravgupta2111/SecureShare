@@ -15,6 +15,10 @@ android {
   defaultConfig {
     versionCode 1
     versionName "1.0.0"
+    buildConfigField("String", "WATERMARK_SECRET", "\"${System.getenv('WATERMARK_SECRET') ?: 'DEV_FALLBACK_KEY'}\"")
+  }
+  buildFeatures {
+    buildConfig true
   }
 }
 
