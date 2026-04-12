@@ -12,8 +12,8 @@ object SpreadSpectrumWatermark {
 
     private const val TAG = "SpreadSpectrumWatermark"
     private const val TILE_SIZE = 256
-    private const val STRENGTH = 8
-    private const val DETECTION_THRESHOLD = 1.5f
+    private const val STRENGTH = 18 // Boosted from 8 to easily survive smartphone ISP noise/blur routines
+    private const val DETECTION_THRESHOLD = 1.0f // Lowered to ensure verification successfully catches cropped camera screenshots
     // Securely injected key for deterministic pseudo-random noise generation
     private val SECRET_KEY = BuildConfig.WATERMARK_SECRET
 
@@ -66,7 +66,12 @@ object SpreadSpectrumWatermark {
         for (i in pixels.indices) {
             val x = i % w
             val y = i / w
-            val tileIdx = (y % TILE_SIZE) * TILE_SIZE + (x % TILE_SIZE)
+            
+            // Normalize physical coordinates to a fixed virtual grid (Scale-Invariant Math)
+            // Width is fixed to 1024 relative units, Height is proportional relative to 1024.
+            val normX = (x * 1024) / w
+            val normY = (y * 1024) / h
+            val tileIdx = (normY % TILE_SIZE) * TILE_SIZE + (normX % TILE_SIZE)
             
             // Proportional signal weights (60% user, 40% document)
             val delta = (userTile[tileIdx] * 0.6f) + (docTile[tileIdx] * 0.4f)
@@ -150,7 +155,11 @@ object SpreadSpectrumWatermark {
             for (i in normalized.indices) {
                 val x = i % w
                 val y = i / w
-                val tileVal = tile[(y % TILE_SIZE) * TILE_SIZE + (x % TILE_SIZE)]
+                
+                // Scale-invariant coordinate evaluation for verification (Aspect Ratio Independent)
+                val normX = (x * 1024) / w
+                val normY = (y * 1024) / h
+                val tileVal = tile[(normY % TILE_SIZE) * TILE_SIZE + (normX % TILE_SIZE)]
                 dot += normalized[i] * tileVal * weight
             }
             

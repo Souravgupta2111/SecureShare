@@ -350,7 +350,7 @@ const HomeScreen = ({ navigation }) => {
                 handleOffline(doc.uuid, !doc.isOffline);
                 break;
             case 'analytics':
-                navigation.navigate('Analytics', { documentId: doc.uuid, documentName: doc.filename });
+                navigation.navigate('DocumentAnalytics', { documentId: doc.uuid, documentName: doc.filename });
                 break;
             case 'access':
                 navigation.navigate('AccessControl', { document: doc });

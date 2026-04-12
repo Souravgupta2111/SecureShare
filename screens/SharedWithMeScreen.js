@@ -62,13 +62,14 @@ const SharedWithMeScreen = ({ navigation }) => {
             }
             setHasMore(more);
         } catch (error) {
-            console.error('Error fetching shared documents:', error);
+            console.error('Error fetching shared documents:', error?.message || error);
+            setHasMore(false); // Stop FlatList from infinitely retrying on failure
         } finally {
             setLoading(false);
             setRefreshing(false);
             setLoadingMore(false);
         }
-    }, [user]);
+    }, [user?.email]);
 
     useEffect(() => {
         fetchSharedDocuments();

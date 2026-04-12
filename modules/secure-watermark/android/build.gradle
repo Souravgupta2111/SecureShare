@@ -20,6 +20,9 @@ android {
   buildFeatures {
     buildConfig true
   }
+  aaptOptions {
+    noCompress "tflite" // Ensure TFLite FlatBuffer is not compressed during APK build
+  }
 }
 
 dependencies {

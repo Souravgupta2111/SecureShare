@@ -4,10 +4,12 @@ import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import DocumentScanner from 'react-native-document-scanner-plugin';
 import theme from '../theme';
 import AnimatedHeader from '../components/AnimatedHeader';
 import * as watermark from '../utils/watermark';
 import * as storage from '../utils/storage';
+import { supabase, getDocumentGrants } from '../lib/supabase';
 
 const VerifyLeakScreen = ({ route, navigation }) => {
     const params = route.params || {}; // Logic to handle direct tab press vs nav from Detail
@@ -57,8 +59,9 @@ const VerifyLeakScreen = ({ route, navigation }) => {
             "Choose the source of the file to verify",
             [
                 { text: "Cancel", style: "cancel" },
-                { text: "Document", onPress: () => pick('document') },
-                { text: "Image", onPress: () => pick('image') }
+                { text: "AI Scanner (Camera)", onPress: handleAIScan },
+                { text: "Gallery Image", onPress: () => pick('image') },
+                { text: "Document File", onPress: () => pick('document') }
             ]
         );
     };
@@ -130,6 +133,29 @@ const VerifyLeakScreen = ({ route, navigation }) => {
         }
     };
 
+    const handleAIScan = async () => {
+        setResult(null);
+        try {
+            const { scannedImages } = await DocumentScanner.scanDocument();
+            if (scannedImages && scannedImages.length > 0) {
+                // Ensure it's a local file format and load into base64
+                const localUri = scannedImages[0];
+                const cleanBase64 = await FileSystem.readAsStringAsync(localUri, { encoding: 'base64' });
+                
+                setSelectedFile({
+                    uri: localUri,
+                    base64: cleanBase64,
+                    type: 'image',
+                    ext: 'jpeg',
+                    name: 'AI_Scanner_Leak.jpg'
+                });
+            }
+        } catch (e) {
+            console.error('AI Scan failed:', e);
+            Alert.alert('Scanner Error', 'Failed to acquire geometric scan: ' + e.message);
+        }
+    };
+
     const handleScan = async (fileObj = selectedFile) => {
         if (!fileObj) return;
 
@@ -163,31 +189,38 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
                 if (SecureWatermark) {
                     // STEP 1: Two-step forensic scan. Collect all known local documents.
-                    const allDocs = await storage.getAllDocuments();
-                    const allDocIds = allDocs.map(d => d.id || d.uuid).filter(Boolean);
+                    const { data: allDocs } = await supabase.from('documents').select('id');
+                    const allDocIds = (allDocs || []).map(d => d.id).filter(Boolean);
 
+                    console.log(`[VerifyLeak] Scanning for Document ID among ${allDocIds.length} known documents...`);
                     const detectedDocId = await SecureWatermark.detectDocumentId(
                         fileObj.base64,
                         JSON.stringify(allDocIds)
                     );
+                    console.log(`[VerifyLeak] Extracted Document ID:`, detectedDocId);
 
                     if (detectedDocId) {
                         extractedUUID = detectedDocId;
-                        targetDoc = await storage.getDocumentByUUID(detectedDocId);
+                        targetDoc = (await supabase.from('documents').select('*').eq('id', detectedDocId).maybeSingle()).data;
 
                         if (targetDoc) {
                             // STEP 2: Correlate user ID from known document recipients
-                            const candidates = targetDoc.recipients?.map(r => r.email).filter(Boolean) || [];
-                            if (targetDoc.owner_email) candidates.push(targetDoc.owner_email);
+                            const grantsRes = await getDocumentGrants(detectedDocId);
+                            const candidates = grantsRes?.data?.map(g => g.recipient_email).filter(Boolean) || [];
+                            
+                            const { data: ownerProfile } = await supabase.from('profiles').select('email').eq('id', targetDoc.owner_id).maybeSingle();
+                            if (ownerProfile && ownerProfile.email) candidates.push(ownerProfile.email);
 
                             if (candidates.length > 0) {
+                                console.log(`[VerifyLeak] Target document found! Scanning for Leaker ID among ${candidates.length} candidates...`);
                                 const leakResult = await SecureWatermark.detectLeaker(
                                     fileObj.base64,
                                     detectedDocId,
                                     JSON.stringify(candidates)
                                 );
+                                console.log(`[VerifyLeak] Leaker Extraction Result:`, leakResult);
 
-                                if (leakResult && leakResult.confidence > 1.5) {
+                                if (leakResult && leakResult.confidence > 0.8) {
                                     leakerId = leakResult.userId;
                                     confidenceScore = leakResult.confidence;
                                 }
@@ -195,9 +228,11 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                         }
                     }
                 } else {
+                    console.log('[VerifyLeak] Native SecureWatermark missing, falling back to legacy delimiter extraction.');
                     // Fallback to legacy extraction if native module not available
                     const extractionResult = await watermark.extractImageWatermarkAsync(fileObj.base64);
                     extractedUUID = extractionResult.data;
+                    console.log(`[VerifyLeak] Legacy Extraction Result:`, extractedUUID);
                 }
             } else {
                 extractedUUID = watermark.extractDocumentWatermark(fileObj.base64, fileObj.ext);
@@ -215,7 +250,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
         if (extractedUUID) {
             // Document text watermark format might split by |
             const docId = extractedUUID.includes('|') ? extractedUUID.split('|')[0] : extractedUUID;
-            const doc = targetDoc || await storage.getDocumentByUUID(docId);
+            const doc = targetDoc || (await supabase.from('documents').select('*').eq('id', docId).maybeSingle()).data;
             
             // Text legacy leaker fallback
             if (!leakerId && extractedUUID.includes('|')) {

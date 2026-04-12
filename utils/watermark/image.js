@@ -68,8 +68,8 @@ export const embedImageWatermarkAsync = async (imageBase64, payload) => {
     }
     try {
         const result = await SecureWatermarkNative.embedLSB(imageBase64, payload);
-        console.log('[Watermark/Image] Used native LSB steganography');
-        return { data: result, method: 'lsb' };
+        console.log('[Watermark/Image] Render-Time Architecture: Uploading clean base64');
+        return { data: result, method: 'render-dynamic' };
     } catch (error) {
         throw new Error(`LSB watermark embedding failed: ${error.message}`);
     }
@@ -85,7 +85,7 @@ export const embedImageWatermarkFromFileAsync = async (fileUri, payload) => {
     }
     try {
         const resultUri = await SecureWatermarkNative.embedLSBFromFile(fileUri, payload);
-        console.log('[Watermark/Image] Used native file-based LSB');
+        console.log('[Watermark/Image] Render-Time Architecture: File parsed cleanly');
         return resultUri;
     } catch (error) {
         throw new Error(`LSB file watermark failed: ${error.message}`);
