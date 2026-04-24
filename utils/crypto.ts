@@ -202,6 +202,7 @@ export const generateKeyPair = async (): Promise<ForgeKeyPair> => {
     }
 
     const KEYGEN_TIMEOUT_MS = 30000;
+    let timeoutId: any;
 
     // Optimization 2: Use forge's async callback API.
     // This yields to the event loop periodically so the UI stays responsive
@@ -219,12 +220,14 @@ export const generateKeyPair = async (): Promise<ForgeKeyPair> => {
                 }
             }, 200);
         }),
-        new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(
+        new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error(
                 'Key generation timed out (>30s). Please try again.'
-            )), KEYGEN_TIMEOUT_MS)
-        ),
+            )), KEYGEN_TIMEOUT_MS);
+        }),
     ]);
+
+    if (timeoutId) clearTimeout(timeoutId);
 
     const elapsed = Date.now() - startTime;
     console.log(`[Crypto] RSA generated in ${elapsed}ms (node-forge async)`);

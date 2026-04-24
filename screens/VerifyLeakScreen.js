@@ -176,6 +176,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
         let leakerId = null;
         let confidenceScore = 0;
         let targetDoc = null;
+        let detectionMethod = null; // 'invisible' or 'visible'
 
         try {
             if (fileObj.type === 'image') {
@@ -188,7 +189,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                 }
 
                 if (SecureWatermark) {
-                    // STEP 1: Two-step forensic scan. Collect all known local documents.
+                    // ── STEP 1: INVISIBLE DETECTION (Spread Spectrum Correlation) ──
                     const { data: allDocs } = await supabase.from('documents').select('id');
                     const allDocIds = (allDocs || []).map(d => d.id).filter(Boolean);
 
@@ -204,7 +205,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                         targetDoc = (await supabase.from('documents').select('*').eq('id', detectedDocId).maybeSingle()).data;
 
                         if (targetDoc) {
-                            // STEP 2: Correlate user ID from known document recipients
+                            // Correlate user ID from known document recipients
                             const grantsRes = await getDocumentGrants(detectedDocId);
                             const candidates = grantsRes?.data?.map(g => g.recipient_email).filter(Boolean) || [];
                             
@@ -212,7 +213,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                             if (ownerProfile && ownerProfile.email) candidates.push(ownerProfile.email);
 
                             if (candidates.length > 0) {
-                                console.log(`[VerifyLeak] Target document found! Scanning for Leaker ID among ${candidates.length} candidates...`);
+                                console.log(`[VerifyLeak] Scanning for Leaker ID among ${candidates.length} candidates...`);
                                 const leakResult = await SecureWatermark.detectLeaker(
                                     fileObj.base64,
                                     detectedDocId,
@@ -220,11 +221,69 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                 );
                                 console.log(`[VerifyLeak] Leaker Extraction Result:`, leakResult);
 
-                                if (leakResult && leakResult.confidence > 0.8) {
+                                if (leakResult && leakResult.confidence > 0.5) {
                                     leakerId = leakResult.userId;
                                     confidenceScore = leakResult.confidence;
+                                    detectionMethod = 'invisible';
                                 }
                             }
+                        }
+                    }
+
+                    // ── STEP 2: VISIBLE DETECTION (ML Kit OCR fallback) ──
+                    // If invisible detection didn't find the leaker, try reading the visible overlay
+                    if (!leakerId) {
+                        console.log('[VerifyLeak] Invisible detection did not identify leaker. Trying visible watermark OCR...');
+                        try {
+                            const ocrText = await SecureWatermark.extractVisibleWatermark(fileObj.base64);
+                            console.log(`[VerifyLeak] OCR extracted text: "${ocrText}"`);
+
+                            if (ocrText && ocrText.length > 0) {
+                                // Parse userId|docId patterns from the OCR output
+                                // The overlay format is: "userId|docId" repeated 20 times
+                                const pipeMatches = ocrText.match(/([^\s|]+)\|([^\s|]+)/g);
+                                if (pipeMatches && pipeMatches.length > 0) {
+                                    // Take the most frequently occurring match (consensus vote)
+                                    const freq = {};
+                                    pipeMatches.forEach(m => { freq[m] = (freq[m] || 0) + 1; });
+                                    const bestMatch = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
+                                    
+                                    if (bestMatch) {
+                                        const parts = bestMatch[0].split('|');
+                                        const visibleUserId = parts[0];
+                                        const visibleDocId = parts[1];
+                                        
+                                        console.log(`[VerifyLeak] Visible watermark detected: user=${visibleUserId}, doc=${visibleDocId}, votes=${bestMatch[1]}`);
+                                        
+                                        leakerId = visibleUserId;
+                                        confidenceScore = Math.min(bestMatch[1] / 10, 1.0); // Normalize vote count to 0-1
+                                        detectionMethod = 'visible';
+
+                                        // If we didn't find the doc from invisible detection, try from visible
+                                        if (!extractedUUID && visibleDocId) {
+                                            extractedUUID = visibleDocId;
+                                            targetDoc = (await supabase.from('documents').select('*').eq('id', visibleDocId).maybeSingle()).data;
+                                        }
+                                    }
+                                }
+
+                                // Fallback: check if any known email appears in the raw OCR text
+                                if (!leakerId && allDocIds.length > 0) {
+                                    const { data: allProfiles } = await supabase.from('profiles').select('email').limit(100);
+                                    const knownEmails = (allProfiles || []).map(p => p.email).filter(Boolean);
+                                    for (const email of knownEmails) {
+                                        if (ocrText.includes(email)) {
+                                            leakerId = email;
+                                            confidenceScore = 0.7;
+                                            detectionMethod = 'visible';
+                                            console.log(`[VerifyLeak] Visible watermark email match: ${email}`);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (ocrErr) {
+                            console.warn('[VerifyLeak] Visible watermark OCR failed:', ocrErr.message);
                         }
                     }
                 } else {
@@ -255,10 +314,11 @@ const VerifyLeakScreen = ({ route, navigation }) => {
             // Text legacy leaker fallback
             if (!leakerId && extractedUUID.includes('|')) {
                 leakerId = extractedUUID.split('|')[1];
+                detectionMethod = 'legacy';
             }
             
             if (doc) {
-                setResult({ status: 'found', data: doc, leaker: leakerId, confidence: confidenceScore });
+                setResult({ status: 'found', data: doc, leaker: leakerId, confidence: confidenceScore, method: detectionMethod });
             } else {
                 setResult({ status: 'not_found' });
             }
@@ -345,19 +405,28 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                             if (score > 1.5) return { label: 'Medium', color: '#eab308' };
                                             return { label: 'Low', color: '#6b7280' };
                                         };
+                                        const getMethodLabel = (method) => {
+                                            if (method === 'invisible') return { label: 'Spread-Spectrum (Invisible)', icon: 'eye-off-outline' };
+                                            if (method === 'visible') return { label: 'OCR Overlay (Visible)', icon: 'eye-outline' };
+                                            return { label: 'Legacy Delimiter', icon: 'code-outline' };
+                                        };
                                         const conf = getConfidenceLabel(result.confidence);
+                                        const methodInfo = getMethodLabel(result.method);
                                         return (
                                             <>
                                                 <View style={[styles.divider, { marginTop: 12, marginBottom: 12, backgroundColor: 'rgba(255,100,100,0.2)' }]} />
                                                 <Text style={[styles.detailRow, { color: theme.colors.status.error, fontWeight: 'bold' }]}>
                                                     <Ionicons name="warning" size={16} color={theme.colors.status.error} /> FORENSIC MATCH
                                                 </Text>
-                                                <Text style={styles.detailRow}><Text style={styles.label}>Target ID:</Text> <Text style={{ color: '#fff' }}>{result.leaker}</Text></Text>
+                                                <Text style={styles.detailRow}><Text style={styles.label}>Leaked By:</Text> <Text style={{ color: '#fff', fontWeight: 'bold' }}>{result.leaker}</Text></Text>
                                                 {result.confidence > 0 && (
                                                     <Text style={styles.detailRow}>
                                                         <Text style={styles.label}>Confidence:</Text> {result.confidence.toFixed(2)} (<Text style={{ color: conf.color }}>{conf.label}</Text>)
                                                     </Text>
                                                 )}
+                                                <Text style={styles.detailRow}>
+                                                    <Text style={styles.label}>Detected Via:</Text> <Ionicons name={methodInfo.icon} size={14} color={theme.colors.accent.blue} /> <Text style={{ color: theme.colors.accent.blue }}>{methodInfo.label}</Text>
+                                                </Text>
                                             </>
                                         );
                                     })()}

@@ -27,4 +27,6 @@ android {
 
 dependencies {
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${kotlinVersion}"
+  // On-device OCR for reading visible watermark overlay during leak verification
+  implementation 'com.google.mlkit:text-recognition:16.0.1'
 }

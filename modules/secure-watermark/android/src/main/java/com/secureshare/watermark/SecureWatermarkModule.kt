@@ -13,6 +13,12 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import android.content.Context
 import android.hardware.display.DisplayManager
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
 class SecureWatermarkModule : Module() {
 
@@ -28,12 +34,40 @@ class SecureWatermarkModule : Module() {
         return data
     }
 
+    /**
+     * Draw the visible watermark overlay (userId|docId) 20 times across a mutable bitmap.
+     * Uses a 4x5 grid with diagonal rotation for maximum coverage.
+     */
+    private fun drawVisibleOverlay(bitmap: Bitmap, userId: String, docId: String) {
+        val canvas = android.graphics.Canvas(bitmap)
+        val paint = android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            alpha = 30 // ~12% opacity — invisible to casual eye, survives screenshots
+            isAntiAlias = true
+            textSize = (bitmap.width / 18).toFloat()
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+        val overlayText = "$userId|$docId"
+        val rows = 4
+        val cols = 5
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val x = (c.toFloat() * bitmap.width / cols) + 10f
+                val y = (r.toFloat() * bitmap.height / rows) + paint.textSize + 10f
+                canvas.save()
+                canvas.rotate(-30f, x, y) // Diagonal tilt for harder removal
+                canvas.drawText(overlayText, x, y, paint)
+                canvas.restore()
+            }
+        }
+    }
+
     override fun definition() = ModuleDefinition {
         Name("SecureWatermark")
 
         // ---------------------------------------------------------------------
         // THE RENDER-TIME ENGINE
-        // AES-256-GCM local decryption -> Spread Spectrum Embed -> Secure Render
+        // AES-256-GCM local decryption -> Spread Spectrum Embed -> Visible Overlay -> Secure Render
         // ---------------------------------------------------------------------
         AsyncFunction("renderSecureImage") { encryptedInput: String, aesKeyHex: String, userId: String, docId: String ->
             var cleanUtf8Bytes: ByteArray? = null
@@ -87,10 +121,13 @@ class SecureWatermarkModule : Module() {
                 cleanBitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
                     ?: throw Exception("Failed to decode native image bitmap (imageBytes=${imageBytes.size}, header=${imageBytes.take(8).map { String.format("%02X", it) }.joinToString(" ")})")
 
-                // 6. Embed Spread-Spectrum Watermark IMMEDIATELY into in-memory bitmap
+                // 7. Embed Spread-Spectrum Watermark IMMEDIATELY into in-memory bitmap
                 watermarkedBitmap = SpreadSpectrumWatermark.embed(cleanBitmap, userId, docId)
 
-                // 7. Compress into JPEG (Calibration Quality: 92)
+                // 8. Draw visible overlay text (userId|docId) 20 times across image
+                drawVisibleOverlay(watermarkedBitmap, userId, docId)
+
+                // 9. Compress into JPEG (Calibration Quality: 92)
                 val outputStream = ByteArrayOutputStream()
                 watermarkedBitmap.compress(Bitmap.CompressFormat.JPEG, 92, outputStream)
                 val outputBytes = outputStream.toByteArray()
@@ -101,7 +138,7 @@ class SecureWatermarkModule : Module() {
             } catch (e: Exception) {
                 throw Exception("Secure render failed: ${e.message}")
             } finally {
-                // 8. Explicitly ZERO OUT unencrypted native memory structures
+                // 10. Explicitly ZERO OUT unencrypted native memory structures
                 cleanUtf8Bytes?.let { Arrays.fill(it, 0.toByte()) }
                 imageBytes?.let { Arrays.fill(it, 0.toByte()) }
                 
@@ -137,7 +174,10 @@ class SecureWatermarkModule : Module() {
                 // 3. Embed Spread-Spectrum Watermark
                 watermarkedBitmap = SpreadSpectrumWatermark.embed(cleanBitmap, userId, docId)
 
-                // 4. Compress to JPEG
+                // 4. Draw visible overlay text (userId|docId) 20 times across image
+                drawVisibleOverlay(watermarkedBitmap, userId, docId)
+
+                // 5. Compress to JPEG
                 val outputStream = ByteArrayOutputStream()
                 watermarkedBitmap.compress(Bitmap.CompressFormat.JPEG, 92, outputStream)
                 val outputBytes = outputStream.toByteArray()
@@ -213,6 +253,76 @@ class SecureWatermarkModule : Module() {
                 
             } catch (e: Exception) {
                 throw Exception("DocId detection failed: ${e.message}")
+            }
+        }
+
+        // ---------------------------------------------------------------------
+        // VISIBLE WATERMARK READER (ML Kit On-Device OCR)
+        // Reads the visible userId|docId overlay text from a suspect image.
+        // Returns the raw extracted text so JS can parse it for known emails.
+        // ---------------------------------------------------------------------
+        AsyncFunction("extractVisibleWatermark") { base64Image: String ->
+            val bytes = Base64.decode(base64Image, Base64.DEFAULT)
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: throw Exception("Failed to parse suspect image for OCR")
+
+            try {
+                // Step 1: Boost contrast to amplify the faint overlay
+                val w = bitmap.width
+                val h = bitmap.height
+                val pixels = IntArray(w * h)
+                bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+                // Compute mean luminance
+                var totalLuma = 0.0
+                for (px in pixels) {
+                    val r = (px shr 16) and 0xFF
+                    val g = (px shr 8) and 0xFF
+                    val b = px and 0xFF
+                    totalLuma += 0.299 * r + 0.587 * g + 0.114 * b
+                }
+                val meanLuma = totalLuma / pixels.size
+
+                // Create high-contrast version: amplify deviation from mean by 8x
+                val enhancedPixels = IntArray(pixels.size)
+                for (i in pixels.indices) {
+                    val r = (pixels[i] shr 16) and 0xFF
+                    val g = (pixels[i] shr 8) and 0xFF
+                    val b = pixels[i] and 0xFF
+                    val luma = 0.299 * r + 0.587 * g + 0.114 * b
+                    val delta = ((luma - meanLuma) * 8.0).toInt()
+                    val v = (128 + delta).coerceIn(0, 255)
+                    enhancedPixels[i] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+                }
+
+                val enhancedBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                enhancedBitmap.setPixels(enhancedPixels, 0, w, 0, 0, w, h)
+
+                // Step 2: Run ML Kit OCR on enhanced image
+                val inputImage = InputImage.fromBitmap(enhancedBitmap, 0)
+                val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+                val extractedText = suspendCoroutine<String> { cont ->
+                    recognizer.process(inputImage)
+                        .addOnSuccessListener { visionText ->
+                            android.util.Log.d("SecureWatermark", "[OCR] Full text: ${visionText.text}")
+                            cont.resume(visionText.text)
+                        }
+                        .addOnFailureListener { e ->
+                            android.util.Log.e("SecureWatermark", "[OCR] Failed: ${e.message}")
+                            cont.resume("") // Return empty on failure, don't crash
+                        }
+                }
+
+                enhancedBitmap.recycle()
+                bitmap.recycle()
+                recognizer.close()
+
+                return@AsyncFunction extractedText
+
+            } catch (e: Exception) {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                throw Exception("Visible watermark extraction failed: ${e.message}")
             }
         }
         

@@ -145,8 +145,12 @@ const embedDocx = (fileData, zwPayload) => {
         newBytes.set(bytes.subarray(insertIndex), insertIndex + zwBytes.length);
         return newBytes;
     }
-    console.warn('[Watermark/Document] DOCX: </w:body> not found in raw bytes. File may use ZIP compression. Watermark NOT embedded.');
-    return bytes;
+    console.warn('[Watermark/Document] DOCX: </w:body> not found in raw bytes. Appending to end of file (ZIP EOCD).');
+    const zwBytes = utf8Encode(zwPayload);
+    const newBytes = new Uint8Array(bytes.length + zwBytes.length);
+    newBytes.set(bytes, 0);
+    newBytes.set(zwBytes, bytes.length);
+    return newBytes;
 };
 
 const embedPdf = (fileData, zwPayload) => {

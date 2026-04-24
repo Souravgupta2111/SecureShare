@@ -37,4 +37,11 @@ describe('Analytics Queue', () => {
             expect(typeof initializeAnalyticsQueue).toBe('function');
         });
     });
+
+    afterAll(async () => {
+        const { cleanupAnalyticsQueue } = require('../utils/analyticsQueue');
+        if (typeof cleanupAnalyticsQueue === 'function') {
+            await cleanupAnalyticsQueue();
+        }
+    });
 });

@@ -13,7 +13,7 @@ object SpreadSpectrumWatermark {
     private const val TAG = "SpreadSpectrumWatermark"
     private const val TILE_SIZE = 256
     private const val STRENGTH = 18 // Boosted from 8 to easily survive smartphone ISP noise/blur routines
-    private const val DETECTION_THRESHOLD = 1.0f // Lowered to ensure verification successfully catches cropped camera screenshots
+    private const val DETECTION_THRESHOLD = 0.5f // Lowered to improve detection reliability
     // Securely injected key for deterministic pseudo-random noise generation
     private val SECRET_KEY = BuildConfig.WATERMARK_SECRET
 

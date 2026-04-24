@@ -21,7 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import AnimatedHeader from '../components/AnimatedHeader';
-import { getDocumentAnalytics, getSecurityEvents, revokeAccessToken } from '../lib/supabase';
+import { getDocumentAnalyticsSummary, getSecurityEvents, revokeAccessToken } from '../lib/supabase';
 import theme from '../theme';
 
 const DocumentAnalyticsScreen = ({ route, navigation }) => {
@@ -37,11 +37,11 @@ const DocumentAnalyticsScreen = ({ route, navigation }) => {
     const fetchData = useCallback(async () => {
         try {
             const [analyticsRes, securityRes] = await Promise.all([
-                getDocumentAnalytics(documentId),
+                getDocumentAnalyticsSummary(documentId),
                 getSecurityEvents(documentId),
             ]);
 
-            if (analyticsRes.data) setAnalytics(analyticsRes.data);
+            if (analyticsRes.data) setAnalytics(analyticsRes.data.sessions || []);
             if (securityRes.data) setSecurityEvents(securityRes.data);
         } catch (error) {
             console.error('Error fetching analytics:', error);
@@ -123,18 +123,21 @@ const DocumentAnalyticsScreen = ({ route, navigation }) => {
     };
 
     // Group analytics by recipient
-    const recipientStats = recipients?.reduce((acc, r) => {
-        const recipientEvents = analytics.filter(e => e.recipient_email === r.email);
-        const viewStarts = recipientEvents.filter(e => e.event_type === 'view_start').length;
-        const totalDuration = recipientEvents
-            .filter(e => e.event_type === 'view_end')
-            .reduce((sum, e) => sum + (e.session_duration || 0), 0);
+    const recipientEmails = new Set(recipients?.map(r => r.email) || []);
+    analytics.forEach(e => recipientEmails.add(e.viewer_email || e.recipient_email));
 
-        acc[r.email] = {
-            email: r.email,
+    const recipientStats = Array.from(recipientEmails).reduce((acc, email) => {
+        if (!email) return acc;
+        const recipientEvents = analytics.filter(e => e.viewer_email === email || e.recipient_email === email);
+        const viewStarts = recipientEvents.length; // Each session represents a view
+        const totalDuration = recipientEvents
+            .reduce((sum, e) => sum + (e.duration_seconds || 0), 0);
+
+        acc[email] = {
+            email: email,
             openCount: viewStarts,
             totalViewTime: totalDuration,
-            lastOpened: recipientEvents[0]?.created_at,
+            lastOpened: recipientEvents[0]?.view_start || recipientEvents[0]?.created_at,
         };
         return acc;
     }, {}) || {};
@@ -253,7 +256,7 @@ const DocumentAnalyticsScreen = ({ route, navigation }) => {
                                         <Text style={styles.eventType}>
                                             {event.event_type.replace('_', ' ').toUpperCase()}
                                         </Text>
-                                        <Text style={styles.eventRecipient}>{event.recipient_email}</Text>
+                                        <Text style={styles.eventRecipient}>{event.recipient_email || event.meta?.viewer_email || event.meta?.viewerEmail || 'Unknown'}</Text>
                                         <Text style={styles.eventTime}>{formatDate(event.created_at)}</Text>
                                     </View>
                                     {event.blocked && (
