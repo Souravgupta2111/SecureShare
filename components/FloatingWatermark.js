@@ -19,7 +19,7 @@ const PADDING = 20;
 const MIN_INTERVAL = 3000; // 3 seconds
 const MAX_INTERVAL = 7000; // 7 seconds
 
-const FloatingWatermark = memo(function FloatingWatermark({ recipientEmail, timestamp }) {
+const FloatingWatermarkItem = memo(function FloatingWatermarkItem({ recipientEmail, timestamp, documentId, delayOffset }) {
     const positionX = useRef(new Animated.Value(0)).current;
     const positionY = useRef(new Animated.Value(0)).current;
     const rotation = useRef(new Animated.Value(0)).current;
@@ -33,6 +33,9 @@ const FloatingWatermark = memo(function FloatingWatermark({ recipientEmail, time
             minute: '2-digit'
         });
     };
+
+    // Get short tracking ID
+    const shortId = documentId ? documentId.substring(0, 8) : '00000000';
 
     // Get random position
     const getRandomPosition = () => {
@@ -58,29 +61,29 @@ const FloatingWatermark = memo(function FloatingWatermark({ recipientEmail, time
         Animated.parallel([
             Animated.timing(positionX, {
                 toValue: newPos.x,
-                duration: 1000,
+                duration: 1500,
                 useNativeDriver: true,
             }),
             Animated.timing(positionY, {
                 toValue: newPos.y,
-                duration: 1000,
+                duration: 1500,
                 useNativeDriver: true,
             }),
             Animated.timing(rotation, {
                 toValue: newRotation,
-                duration: 1000,
+                duration: 1500,
                 useNativeDriver: true,
             }),
             // Subtle opacity pulse
             Animated.sequence([
                 Animated.timing(opacity, {
                     toValue: 0.12,
-                    duration: 500,
+                    duration: 750,
                     useNativeDriver: true,
                 }),
                 Animated.timing(opacity, {
                     toValue: 0.18,
-                    duration: 500,
+                    duration: 750,
                     useNativeDriver: true,
                 }),
             ]),
@@ -92,18 +95,25 @@ const FloatingWatermark = memo(function FloatingWatermark({ recipientEmail, time
         positionX.setValue(initialPos.x);
         positionY.setValue(initialPos.y);
 
-        const scheduleNextMove = () => {
-            const delay = MIN_INTERVAL + Math.random() * (MAX_INTERVAL - MIN_INTERVAL);
-            return setTimeout(() => {
-                animateToNewPosition();
-                scheduleNextMove();
-            }, delay);
-        };
+        let timeoutId;
+        
+        // Initial delay offset to desynchronize the watermarks
+        const startTimeout = setTimeout(() => {
+            const scheduleNextMove = () => {
+                const delay = MIN_INTERVAL + Math.random() * (MAX_INTERVAL - MIN_INTERVAL);
+                timeoutId = setTimeout(() => {
+                    animateToNewPosition();
+                    scheduleNextMove();
+                }, delay);
+            };
 
-        const timeoutId = scheduleNextMove();
+            animateToNewPosition();
+            scheduleNextMove();
+        }, delayOffset);
 
         return () => {
-            clearTimeout(timeoutId);
+            clearTimeout(startTimeout);
+            if (timeoutId) clearTimeout(timeoutId);
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -128,9 +138,21 @@ const FloatingWatermark = memo(function FloatingWatermark({ recipientEmail, time
             pointerEvents="none"
         >
             <Text style={styles.watermarkText} numberOfLines={1}>
-                {recipientEmail || 'recipient@email.com'} • {formatTime()} • SecureShare
+                {recipientEmail || 'recipient@email.com'} • {formatTime()} • TRK-{shortId}
             </Text>
         </Animated.View>
+    );
+});
+
+const FloatingWatermark = memo(function FloatingWatermark(props) {
+    // Render 4 floating watermarks with different initial delay offsets so they don't move in sync
+    return (
+        <>
+            <FloatingWatermarkItem {...props} delayOffset={0} />
+            <FloatingWatermarkItem {...props} delayOffset={1500} />
+            <FloatingWatermarkItem {...props} delayOffset={3000} />
+            <FloatingWatermarkItem {...props} delayOffset={4500} />
+        </>
     );
 });
 

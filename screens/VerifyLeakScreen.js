@@ -232,51 +232,45 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
                     // ── STEP 2: VISIBLE DETECTION (ML Kit OCR fallback) ──
                     // If invisible detection didn't find the leaker, try reading the visible overlay
-                    if (!leakerId) {
-                        console.log('[VerifyLeak] Invisible detection did not identify leaker. Trying visible watermark OCR...');
+                    if (!leakerId || !extractedUUID) {
+                        console.log('[VerifyLeak] Invisible detection incomplete. Trying visible watermark OCR...');
                         try {
                             const ocrText = await SecureWatermark.extractVisibleWatermark(fileObj.base64);
                             console.log(`[VerifyLeak] OCR extracted text: "${ocrText}"`);
 
                             if (ocrText && ocrText.length > 0) {
-                                // Parse userId|docId patterns from the OCR output
-                                // The overlay format is: "userId|docId" repeated 20 times
-                                const pipeMatches = ocrText.match(/([^\s|]+)\|([^\s|]+)/g);
-                                if (pipeMatches && pipeMatches.length > 0) {
-                                    // Take the most frequently occurring match (consensus vote)
-                                    const freq = {};
-                                    pipeMatches.forEach(m => { freq[m] = (freq[m] || 0) + 1; });
-                                    const bestMatch = Object.entries(freq).sort((a, b) => b[1] - a[1])[0];
-                                    
-                                    if (bestMatch) {
-                                        const parts = bestMatch[0].split('|');
-                                        const visibleUserId = parts[0];
-                                        const visibleDocId = parts[1];
-                                        
-                                        console.log(`[VerifyLeak] Visible watermark detected: user=${visibleUserId}, doc=${visibleDocId}, votes=${bestMatch[1]}`);
-                                        
-                                        leakerId = visibleUserId;
-                                        confidenceScore = Math.min(bestMatch[1] / 10, 1.0); // Normalize vote count to 0-1
-                                        detectionMethod = 'visible';
+                                // 1. Extract Email from OCR Text
+                                const emailMatch = ocrText.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+                                if (emailMatch) {
+                                    leakerId = emailMatch[0];
+                                    detectionMethod = 'visible';
+                                    confidenceScore = 0.8;
+                                    console.log(`[VerifyLeak] Visible watermark email detected: ${leakerId}`);
+                                }
 
-                                        // If we didn't find the doc from invisible detection, try from visible
-                                        if (!extractedUUID && visibleDocId) {
-                                            extractedUUID = visibleDocId;
-                                            targetDoc = (await supabase.from('documents').select('*').eq('id', visibleDocId).maybeSingle()).data;
-                                        }
+                                // 2. Extract TRK-ID from OCR Text
+                                const trkMatch = ocrText.match(/TRK-([a-zA-Z0-9]{5,8})/i);
+                                if (trkMatch && !extractedUUID) {
+                                    const shortId = trkMatch[1].toLowerCase();
+                                    // Find matching docId
+                                    const matchedDocId = allDocIds.find(id => id.toLowerCase().startsWith(shortId));
+                                    if (matchedDocId) {
+                                        extractedUUID = matchedDocId;
+                                        targetDoc = (await supabase.from('documents').select('*').eq('id', matchedDocId).maybeSingle()).data;
+                                        console.log(`[VerifyLeak] Visible watermark TRK matched doc: ${matchedDocId}`);
                                     }
                                 }
 
-                                // Fallback: check if any known email appears in the raw OCR text
+                                // Fallback: check if any known email appears in the raw OCR text with fuzzy matching if regex missed
                                 if (!leakerId && allDocIds.length > 0) {
                                     const { data: allProfiles } = await supabase.from('profiles').select('email').limit(100);
                                     const knownEmails = (allProfiles || []).map(p => p.email).filter(Boolean);
                                     for (const email of knownEmails) {
-                                        if (ocrText.includes(email)) {
+                                        if (ocrText.toLowerCase().includes(email.toLowerCase())) {
                                             leakerId = email;
-                                            confidenceScore = 0.7;
+                                            confidenceScore = 0.6;
                                             detectionMethod = 'visible';
-                                            console.log(`[VerifyLeak] Visible watermark email match: ${email}`);
+                                            console.log(`[VerifyLeak] Visible watermark known email match: ${email}`);
                                             break;
                                         }
                                     }
@@ -306,22 +300,28 @@ const VerifyLeakScreen = ({ route, navigation }) => {
         }
 
         // Check DB
-        if (extractedUUID) {
-            // Document text watermark format might split by |
-            const docId = extractedUUID.includes('|') ? extractedUUID.split('|')[0] : extractedUUID;
-            const doc = targetDoc || (await supabase.from('documents').select('*').eq('id', docId).maybeSingle()).data;
-            
-            // Text legacy leaker fallback
-            if (!leakerId && extractedUUID.includes('|')) {
-                leakerId = extractedUUID.split('|')[1];
-                detectionMethod = 'legacy';
+        if (extractedUUID || leakerId) {
+            let doc = targetDoc;
+            if (extractedUUID && !doc) {
+                // Document text watermark format might split by |
+                const docId = extractedUUID.includes('|') ? extractedUUID.split('|')[0] : extractedUUID;
+                doc = (await supabase.from('documents').select('*').eq('id', docId).maybeSingle()).data;
+                
+                // Text legacy leaker fallback
+                if (!leakerId && extractedUUID.includes('|')) {
+                    leakerId = extractedUUID.split('|')[1];
+                    detectionMethod = 'legacy';
+                }
             }
             
-            if (doc) {
-                setResult({ status: 'found', data: doc, leaker: leakerId, confidence: confidenceScore, method: detectionMethod });
-            } else {
-                setResult({ status: 'not_found' });
-            }
+            // If we found a leaker or a doc, it's a confirmed leak
+            setResult({ 
+                status: 'found', 
+                data: doc || { filename: 'Unknown Document (ID Obscured)', recipients: [] }, 
+                leaker: leakerId, 
+                confidence: confidenceScore, 
+                method: detectionMethod 
+            });
         } else {
             setResult({ status: 'not_found' });
         }
@@ -362,7 +362,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                         <Ionicons name="document-text" size={32} color="white" />
                                     </View>
                                 )}
-                                <Text style={styles.previewName}>Verifying watermark for '{selectedFile.name}'</Text>
+                                <Text style={styles.previewName}>Verifying watermark for "{selectedFile.name}"</Text>
                             </View>
                         )}
                     </>
@@ -395,8 +395,6 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                 <View style={styles.details}>
                                     <Text style={styles.detailRow}><Text style={styles.label}>Document:</Text> {result.data.filename}</Text>
                                     <Text style={styles.detailRow}><Text style={styles.label}>Shared With:</Text> {result.data.recipients?.map(r => r.email).join(', ') || 'None'}</Text>
-                                    <Text style={styles.detailRow}><Text style={styles.label}>Shared On:</Text> {new Date(result.data.sharedAt || result.data.created_at).toLocaleDateString()}</Text>
-                                    <Text style={styles.detailRow}><Text style={styles.label}>Status:</Text> {result.data.status?.toUpperCase() || 'ACTIVE'}</Text>
                                     
                                     {result.leaker && (() => {
                                         const getConfidenceLabel = (score) => {
@@ -431,7 +429,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                         );
                                     })()}
                                 </View>
-                                <Pressable onPress={() => navigation.navigate('Home', { screen: 'Detail', params: { document: result.data } })}>
+                                <Pressable onPress={() => navigation.navigate('My Docs', { screen: 'Detail', params: { document: result.data } })}>
                                     <Text style={styles.link}>View Full Details →</Text>
                                 </Pressable>
                             </View>

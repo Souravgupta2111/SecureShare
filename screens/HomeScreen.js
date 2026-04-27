@@ -91,7 +91,7 @@ const HomeScreen = ({ navigation }) => {
     const styles = useMemo(() => createStyles(theme, isDark), [theme, isDark]);
 
     // View Mode
-    const [viewMode, setViewMode] = useState('list'); // 'list' | 'grid'
+    const [viewMode, setViewMode] = useState('grid'); // 'list' | 'grid'
 
     // Selection Mode
     const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -130,6 +130,7 @@ const HomeScreen = ({ navigation }) => {
                     ...doc,
                     uuid: doc.id,
                     isCloud: true,
+                    size: doc.size_bytes || 0,
                     filename: doc.filename,
                     fileType: doc.mime_type?.startsWith('image/') ? 'image' :
                         doc.mime_type === 'application/pdf' ? 'pdf' : 'document',
@@ -161,8 +162,12 @@ const HomeScreen = ({ navigation }) => {
             );
         }
 
-        // Sort by sharedAt desc
-        updatedDocs.sort((a, b) => b.sharedAt - a.sharedAt);
+        // Sort by isStarred first (starred at top), then sharedAt desc
+        updatedDocs.sort((a, b) => {
+            if (a.isStarred && !b.isStarred) return -1;
+            if (!a.isStarred && b.isStarred) return 1;
+            return b.sharedAt - a.sharedAt;
+        });
 
         setDocs(updatedDocs);
 

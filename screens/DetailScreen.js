@@ -45,9 +45,32 @@ const DetailScreen = ({ route, navigation }) => {
                     text: "Revoke",
                     style: "destructive",
                     onPress: async () => {
-                        const updated = await storage.revokeDocument(doc.uuid);
-                        setDoc(updated);
-                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                        try {
+                            let updated = null;
+                            if (doc.isCloud || !doc.uuid) {
+                                // For cloud documents, we should call a cloud revoke API.
+                                // Currently, deleteCloudDocument acts as a soft-delete/revoke
+                                // But to just revoke, we might need a specific Supabase call.
+                                // If there isn't one, we can just soft delete it.
+                                import('../lib/supabase').then(async ({ deleteCloudDocument }) => {
+                                    await deleteCloudDocument(doc.id || doc.uuid, doc.storage_path || doc.file_path);
+                                    setDoc({ ...doc, status: 'revoked' });
+                                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                                });
+                                return;
+                            } else {
+                                updated = await storage.revokeDocument(doc.uuid);
+                            }
+                            
+                            if (updated) {
+                                setDoc(updated);
+                                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                            } else {
+                                Alert.alert("Error", "Could not revoke document.");
+                            }
+                        } catch (e) {
+                            Alert.alert("Error", "Failed to revoke access.");
+                        }
                     }
                 }
             ]
@@ -63,8 +86,19 @@ const DetailScreen = ({ route, navigation }) => {
         });
     };
 
+    if (!doc) {
+        return (
+            <View style={styles.container}>
+                <AnimatedHeader title="Details" showBack={true} onBack={() => navigation.goBack()} />
+                <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ color: 'white' }}>Document not found.</Text>
+                </View>
+            </View>
+        );
+    }
+
     // Stats (defensive defaults for cloud docs that may not have recipients yet)
-    const recipients = (doc && Array.isArray(doc.recipients)) ? doc.recipients : [];
+    const recipients = Array.isArray(doc.recipients) ? doc.recipients : [];
     const totalOpens = recipients.length > 0 ? recipients.reduce((a, r) => a + (r.openCount || 0), 0) : 0;
     const totalSeconds = recipients.length > 0 ? recipients.reduce((a, r) => a + (r.totalViewTime || 0), 0) : 0;
     const timeStr = totalSeconds >= 60 ? `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s` : `${totalSeconds}s`;
@@ -76,6 +110,7 @@ const DetailScreen = ({ route, navigation }) => {
     }
 
     const formatDate = (ts) => {
+        if (!ts) return 'Unknown';
         const d = new Date(ts);
         return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };

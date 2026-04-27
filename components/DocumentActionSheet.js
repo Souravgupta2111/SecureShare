@@ -67,7 +67,9 @@ const DocumentActionSheet = ({ visible, onClose, document, onAction }) => {
                                     {document.name || document.filename}
                                 </Text>
                                 <Text style={styles.subtitle}>
-                                    {(document.size / 1024 / 1024).toFixed(1)} MB • {new Date(document.created_at || Date.now()).toLocaleDateString()}
+                                    {document.size || document.size_bytes ? 
+                                        ((document.size || document.size_bytes) / 1024 / 1024).toFixed(1) + ' MB' 
+                                        : 'Unknown Size'} • {new Date(document.created_at || document.sharedAt || Date.now()).toLocaleDateString()}
                                 </Text>
                             </View>
 
@@ -95,11 +97,6 @@ const DocumentActionSheet = ({ visible, onClose, document, onAction }) => {
                                             onPress={() => handleAction('rename')}
                                         />
                                         <ActionItem
-                                            icon="copy-outline"
-                                            label="Duplicate"
-                                            onPress={() => handleAction('duplicate')}
-                                        />
-                                        <ActionItem
                                             icon="share-outline"
                                             label="Share"
                                             onPress={() => handleAction('share')}
@@ -109,12 +106,6 @@ const DocumentActionSheet = ({ visible, onClose, document, onAction }) => {
                                             label={document.isStarred ? "Unstar" : "Star"}
                                             color={document.isStarred ? theme.colors.accent.warning : 'white'}
                                             onPress={() => handleAction('star')}
-                                        />
-                                        <ActionItem
-                                            icon={document.isOffline ? "cloud-done" : "cloud-download-outline"}
-                                            label={document.isOffline ? "Remove" : "Offline"}
-                                            color={document.isOffline ? theme.colors.status.success : 'white'}
-                                            onPress={() => handleAction('offline')}
                                         />
                                         <ActionItem
                                             icon="information-circle-outline"

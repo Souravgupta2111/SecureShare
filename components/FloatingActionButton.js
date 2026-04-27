@@ -95,68 +95,8 @@ FABMenuItem.displayName = 'FABMenuItem';
 
 const FloatingActionButton = memo(({
     onUpload,
-    onScan,
-    navigation
 }) => {
-    const [isOpen, setIsOpen] = useState(false);
     const mainScale = useRef(new Animated.Value(1)).current;
-    const rotateAnim = useRef(new Animated.Value(0)).current;
-    const backdropOpacity = useRef(new Animated.Value(0)).current;
-
-    const menuItems = [
-        {
-            icon: 'scan-outline',
-            label: 'Scan',
-            color: '#2563EB', // Blue
-            onPress: () => handleMenuPress(onScan)
-        },
-        {
-            icon: 'cloud-upload-outline',
-            label: 'Upload',
-            color: '#10B981', // Green
-            onPress: () => handleMenuPress(onUpload)
-        },
-    ];
-
-    const handleMenuPress = useCallback((handler) => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-        // Close menu with animation
-        Animated.parallel([
-            Animated.spring(rotateAnim, {
-                toValue: 0,
-                useNativeDriver: true,
-                friction: 6,
-            }),
-            Animated.timing(backdropOpacity, {
-                toValue: 0,
-                duration: 200,
-                useNativeDriver: true,
-            }),
-        ]).start();
-
-        setIsOpen(false);
-        handler?.();
-    }, [rotateAnim, backdropOpacity]);
-
-    const toggleMenu = useCallback(() => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-        const newIsOpen = !isOpen;
-        setIsOpen(newIsOpen);
-
-        Animated.parallel([
-            Animated.spring(rotateAnim, {
-                toValue: newIsOpen ? 1 : 0,
-                useNativeDriver: true,
-                friction: 6,
-            }),
-            Animated.timing(backdropOpacity, {
-                toValue: newIsOpen ? 1 : 0,
-                duration: 200,
-                useNativeDriver: true,
-            }),
-        ]).start();
-    }, [isOpen, rotateAnim, backdropOpacity]);
 
     const handlePressIn = () => {
         Animated.spring(mainScale, {
@@ -174,60 +114,30 @@ const FloatingActionButton = memo(({
         }).start();
     };
 
-    const rotate = rotateAnim.interpolate({
-        inputRange: [0, 1],
-        outputRange: ['0deg', '45deg'],
-    });
+    const handlePress = () => {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        onUpload?.();
+    };
 
     return (
-        <>
-            {/* Backdrop */}
-            {isOpen && (
-                <Animated.View
-                    style={[
-                        styles.backdrop,
-                        { opacity: backdropOpacity },
-                    ]}
-                >
-                    <Pressable style={StyleSheet.absoluteFill} onPress={toggleMenu} />
+        <View style={styles.container}>
+            <Pressable
+                onPressIn={handlePressIn}
+                onPressOut={handlePressOut}
+                onPress={handlePress}
+                accessibilityRole="button"
+                accessibilityLabel="Add document"
+            >
+                <Animated.View style={{ transform: [{ scale: mainScale }] }}>
+                    <LinearGradient
+                        colors={['#3d7aff', '#6366F1']}
+                        style={styles.fab}
+                    >
+                        <Ionicons name="add" size={28} color="white" />
+                    </LinearGradient>
                 </Animated.View>
-            )}
-
-            {/* FAB Container - positioned above tab bar */}
-            <View style={styles.container}>
-                {/* Menu items */}
-                <View style={styles.menu}>
-                    {menuItems.map((item, index) => (
-                        <FABMenuItem
-                            key={item.icon}
-                            {...item}
-                            index={index}
-                            isVisible={isOpen}
-                        />
-                    ))}
-                </View>
-
-                {/* Main FAB */}
-                <Pressable
-                    onPressIn={handlePressIn}
-                    onPressOut={handlePressOut}
-                    onPress={toggleMenu}
-                    accessibilityRole="button"
-                    accessibilityLabel={isOpen ? 'Close menu' : 'Add document'}
-                >
-                    <Animated.View style={{ transform: [{ scale: mainScale }] }}>
-                        <LinearGradient
-                            colors={['#3d7aff', '#6366F1']}
-                            style={styles.fab}
-                        >
-                            <Animated.View style={{ transform: [{ rotate }] }}>
-                                <Ionicons name="add" size={28} color="white" />
-                            </Animated.View>
-                        </LinearGradient>
-                    </Animated.View>
-                </Pressable>
-            </View>
-        </>
+            </Pressable>
+        </View>
     );
 });
 

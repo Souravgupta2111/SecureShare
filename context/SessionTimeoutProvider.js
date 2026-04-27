@@ -79,55 +79,12 @@ export const SessionTimeoutProvider = ({ children, timeoutMs = DEFAULT_TIMEOUT_M
 
     // Check timeout status
     useEffect(() => {
-        if (!isAuthenticated) {
-            if (timeoutIdRef.current) {
-                clearInterval(timeoutIdRef.current);
-            }
-            return;
-        }
-
-        resetTimeout();
-
-        // Check every 10 seconds
-        timeoutIdRef.current = setInterval(() => {
-            const elapsed = Date.now() - lastActivityRef.current;
-            const remaining = timeoutMs - elapsed;
-
-            setRemainingTime(Math.max(0, remaining));
-
-            if (remaining <= 0) {
-                handleTimeout();
-            } else if (remaining <= WARNING_BEFORE_MS && !warningShownRef.current) {
-                showWarning();
-            }
-        }, 10000);
-
-        return () => {
-            if (timeoutIdRef.current) {
-                clearInterval(timeoutIdRef.current);
-            }
-        };
+        // Inactivity timeout removed per user request
     }, [isAuthenticated, timeoutMs, handleTimeout, showWarning, resetTimeout]);
 
     // Handle app state changes (pause timer when backgrounded)
     useEffect(() => {
-        const subscription = AppState.addEventListener('change', (nextAppState) => {
-            if (
-                appStateRef.current.match(/inactive|background/) &&
-                nextAppState === 'active'
-            ) {
-                // App came to foreground - check if timed out while away
-                const elapsed = Date.now() - lastActivityRef.current;
-                if (elapsed >= timeoutMs && isAuthenticated) {
-                    handleTimeout();
-                }
-            }
-            appStateRef.current = nextAppState;
-        });
-
-        return () => {
-            subscription.remove();
-        };
+        // App state timeout removed per user request
     }, [isAuthenticated, timeoutMs, handleTimeout]);
 
     const value = {

@@ -145,14 +145,14 @@ const styles = StyleSheet.create({
     checkContainer: {
         width: 40,
         height: 40,
-        transform: [{ rotate: '-45deg' }],
+        transform: [{ rotate: '45deg' }],
         marginTop: -5,
         marginLeft: -5,
     },
     checkArmLong: {
         position: 'absolute',
         bottom: 0,
-        left: 0,
+        right: 0,
         width: 3,
         backgroundColor: 'white',
         // height animated
@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
     checkArmShort: {
         position: 'absolute',
         bottom: 0,
-        left: 0,
+        right: 0,
         height: 3,
         backgroundColor: 'white',
         // width animated

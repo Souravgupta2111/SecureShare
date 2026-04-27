@@ -16,9 +16,7 @@ import android.hardware.display.DisplayManager
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
+import com.google.android.gms.tasks.Tasks
 
 class SecureWatermarkModule : Module() {
 
@@ -302,16 +300,13 @@ class SecureWatermarkModule : Module() {
                 val inputImage = InputImage.fromBitmap(enhancedBitmap, 0)
                 val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-                val extractedText = suspendCoroutine<String> { cont ->
-                    recognizer.process(inputImage)
-                        .addOnSuccessListener { visionText ->
-                            android.util.Log.d("SecureWatermark", "[OCR] Full text: ${visionText.text}")
-                            cont.resume(visionText.text)
-                        }
-                        .addOnFailureListener { e ->
-                            android.util.Log.e("SecureWatermark", "[OCR] Failed: ${e.message}")
-                            cont.resume("") // Return empty on failure, don't crash
-                        }
+                val extractedText = try {
+                    val visionText = Tasks.await(recognizer.process(inputImage))
+                    android.util.Log.d("SecureWatermark", "[OCR] Full text: ${visionText.text}")
+                    visionText.text
+                } catch (e: Exception) {
+                    android.util.Log.e("SecureWatermark", "[OCR] Failed: ${e.message}")
+                    "" // Return empty on failure, don't crash
                 }
 
                 enhancedBitmap.recycle()
