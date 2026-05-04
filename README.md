@@ -232,12 +232,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [React Native](https://reactnative.dev/) community for continuous improvements
 - All contributors who helped make this project possible
 
-## 📞 Contact
-
-Your Name - [@yourtwitter](https://twitter.com/yourtwitter) - email@example.com
-
-Project Link: [https://github.com/YOUR_USERNAME/SecureShare](https://github.com/YOUR_USERNAME/SecureShare)
-
----
-
 ⭐ Star this repo if you find it helpful!
