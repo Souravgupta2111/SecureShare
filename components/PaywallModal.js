@@ -1,5 +1,5 @@
 /**
- * PaywallModal — SecureShare Pro upgrade sheet.
+ * PaywallModal — SecureSend Pro upgrade sheet.
  * Renders the offering's packages dynamically (localized prices come from the
  * store). Includes the App Store-required Restore button, price/period, and
  * links to Terms/Privacy + auto-renew disclosure.
@@ -56,7 +56,7 @@ const PaywallModal = ({ visible, onClose, packages = [], available, onPurchase, 
         const res = await onRestore();
         setBusy(false);
         Alert.alert(res.success ? 'Restored' : 'Nothing to Restore',
-            res.success ? 'Your SecureShare Pro subscription is active.' : 'No active subscription found for this account.');
+            res.success ? 'Your SecureSend Pro subscription is active.' : 'No active subscription found for this account.');
     };
 
     return (
@@ -71,7 +71,7 @@ const PaywallModal = ({ visible, onClose, packages = [], available, onPurchase, 
                         <View style={styles.badge}>
                             <Ionicons name="lock-open" size={26} color="white" />
                         </View>
-                        <Text style={styles.title}>SecureShare Pro</Text>
+                        <Text style={styles.title}>SecureSend Pro</Text>
                         <Text style={styles.subtitle}>Unlock the full power of secure sharing.</Text>
 
                         <View style={styles.benefits}>

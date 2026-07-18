@@ -1,8 +1,8 @@
-# SecureShare Privacy Policy
+# SecureSend Privacy Policy
 
 **Last Updated:** February 2, 2026
 
-SecureShare ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our mobile application ("App").
+SecureSend ("we," "our," or "us") is committed to protecting your privacy. This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you use our mobile application ("App").
 
 ---
 
@@ -130,7 +130,7 @@ We explicitly **exclude** from error reports:
 
 ## 8. Children's Privacy
 
-SecureShare is not intended for users under 13 years of age. We do not knowingly collect information from children under 13.
+SecureSend is not intended for users under 13 years of age. We do not knowingly collect information from children under 13.
 
 ---
 

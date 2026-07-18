@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "SecureShare",
+    "name": "SecureSend",
     "slug": "SecureShare",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -14,9 +14,9 @@
       "bundleIdentifier": "com.secureshare.app",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSPhotoLibraryUsageDescription": "SecureShare needs access to your photos to share and watermark images securely.",
-        "NSCameraUsageDescription": "SecureShare needs camera access to capture documents for secure sharing.",
-        "NSFaceIDUsageDescription": "Use Face ID to unlock SecureShare and protect your documents."
+        "NSPhotoLibraryUsageDescription": "SecureSend needs access to your photos to share and watermark images securely.",
+        "NSCameraUsageDescription": "SecureSend needs camera access to capture documents for secure sharing.",
+        "NSFaceIDUsageDescription": "Use Face ID to unlock SecureSend and protect your documents."
       }
     },
     "android": {
@@ -76,8 +76,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "SecureShare needs access to your photos to share and watermark images securely.",
-          "cameraPermission": "SecureShare needs camera access to capture documents for secure sharing."
+          "photosPermission": "SecureSend needs access to your photos to share and watermark images securely.",
+          "cameraPermission": "SecureSend needs camera access to capture documents for secure sharing."
         }
       ],
       "expo-local-authentication",
