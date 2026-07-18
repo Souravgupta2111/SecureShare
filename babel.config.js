@@ -14,7 +14,7 @@ module.exports = function (api) {
 
     // Strip console logs in production
     if (isProduction) {
-        plugins.push(['@babel/plugin-transform-remove-console', {
+        plugins.push(['transform-remove-console', {
             exclude: ['error', 'warn'] // Keep console.error and console.warn
         }]);
     }
