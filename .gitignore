@@ -37,6 +37,11 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# stray logs / tool output
+lint_log*.txt
+test_output.txt
+*.log
+
 app-example
 
 # generated native folders

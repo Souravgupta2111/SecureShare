@@ -1,0 +1,40 @@
+appId: com.secureshare.app
+name: Auth - sign in
+env:
+  SS_OWNER_EMAIL: owner@example.com
+  SS_OWNER_PASSWORD: changeme
+---
+- launchApp:
+    clearState: true
+
+# Onboarding may show on a fresh install; skip through if present.
+- runFlow:
+    when:
+      visible: "Get Started"
+    commands:
+      - tapOn: "Get Started"
+
+# Auth screen
+- assertVisible: "Email Address"
+- tapOn: "Email Address"
+- inputText: ${SS_OWNER_EMAIL}
+- tapOn: "Password"
+- inputText: ${SS_OWNER_PASSWORD}
+- hideKeyboard
+
+# TODO: add testID="auth-submit" to the sign in button for a stable selector.
+- tapOn:
+    text: "Sign In"
+    retryTapIfNoChange: true
+
+# After sign-in the app either lands on the tabs or generates keys first.
+- runFlow:
+    when:
+      visible: "Setting Up Security"
+    commands:
+      - extendedWaitUntil:
+          visible: "All Set"
+          timeout: 60000
+
+- assertVisible:
+    text: "Home"

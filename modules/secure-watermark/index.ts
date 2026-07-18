@@ -1,27 +1,35 @@
-import { requireNativeModule, Platform } from 'expo-modules-core';
+import { requireNativeModule } from 'expo-modules-core';
 
-// Types for the native module
+// Types for the native module. Implemented on BOTH Android (Kotlin) and iOS (Swift).
 export interface SecureWatermarkModule {
-    // New LSB steganography methods (async)
+    // Render-time forensic engine
+    renderSecureImage(encryptedInput: string, aesKeyHex: string, userId: string, docId: string): Promise<string>;
+    embedWatermark(base64Image: string, userId: string, docId: string): Promise<string>;
+
+    // Forensic detection (spread-spectrum NCC + OCR)
+    detectDocumentId(base64Image: string, docIdsJson: string): Promise<string | null>;
+    detectLeaker(base64Image: string, docId: string, candidatesJson: string): Promise<{ userId: string; confidence: number } | null>;
+    extractVisibleWatermark(base64Image: string): Promise<string>;
+
+    // DRM
+    isScreenBeingMirrored(): Promise<boolean>;
+
+    // Legacy LSB mocks (embedding now happens at render time on both platforms)
     embedLSB(imageBase64: string, watermarkText: string): Promise<string>;
     extractLSB(imageBase64: string): Promise<string | null>;
     verifyLSB(imageBase64: string): Promise<boolean>;
-
-    // Legacy methods (sync - backward compatibility)
-    embed(imageBytes: Uint8Array, watermarkText: string): string;
-    verify(imageBytes: Uint8Array): boolean;
 }
 
 // Get the native module
 const NativeModule = requireNativeModule<SecureWatermarkModule>('SecureWatermark');
 
 /**
- * Check if native LSB steganography is available
- * Only available on Android with dev client build
+ * Check if the native watermark module is available.
+ * Implemented on both Android and iOS — gate on the method existing rather than
+ * the platform, so a missing/unlinked native module still degrades gracefully.
  */
 export const isNativeLSBAvailable = (): boolean => {
-    return Platform.OS === 'android' &&
-        typeof NativeModule?.embedLSB === 'function';
+    return !!NativeModule && typeof NativeModule.embedLSB === 'function';
 };
 
 /**

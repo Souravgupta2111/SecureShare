@@ -1,54 +1,59 @@
 // QuickCrypto Polyfill - MUST BE FIRST
 import './utils/cryptoBootstrap';
 
-import 'react-native-gesture-handler';
-import React, { useEffect, useState } from 'react';
-import { StatusBar } from 'expo-status-bar';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
-import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import * as Notifications from 'expo-notifications';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useState } from 'react';
+import { StyleSheet } from 'react-native';
+import 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import theme from './theme';
 
 // Auth Context
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { ThemeProvider, useTheme } from './context/ThemeContext';
+import { PurchasesProvider } from './context/PurchasesContext';
 import { SessionTimeoutProvider } from './context/SessionTimeoutProvider';
+import { ThemeProvider } from './context/ThemeContext';
 
 // Components
-import GlassTabBar from './components/GlassTabBar';
+import AnimatedSplash from './components/AnimatedSplash';
 import ErrorBoundary from './components/ErrorBoundary';
+import GlassTabBar from './components/GlassTabBar';
 
 // Analytics and utilities
-import { initializeAnalyticsQueue, cleanupAnalyticsQueue } from './utils/analyticsQueue';
-import { initializeMemoryManager } from './utils/memoryManager';
+import { cleanupAnalyticsQueue, initializeAnalyticsQueue } from './utils/analyticsQueue';
 import { initializeExpiryNotifications } from './utils/expiryNotifications';
+import { initializeMemoryManager } from './utils/memoryManager';
 
 // Screens
+import AccessControlScreen from './screens/AccessControlScreen';
 import AuthScreen from './screens/AuthScreen';
-import HomeScreen from './screens/HomeScreen';
-import ShareScreen from './screens/ShareScreen';
+import CommentsScreen from './screens/CommentsScreen';
 import DetailScreen from './screens/DetailScreen';
-import ViewerScreen from './screens/ViewerScreen';
-import VerifyLeakScreen from './screens/VerifyLeakScreen';
+import DocumentAnalyticsScreen from './screens/DocumentAnalyticsScreen';
+import HomeScreen from './screens/HomeScreen';
+import KeyGenerationScreen from './screens/KeyGenerationScreen';
+import OnboardingScreen, { hasCompletedOnboarding } from './screens/OnboardingScreen';
+import ProfileScreen from './screens/ProfileScreen';
+import ResetPasswordScreen from './screens/ResetPasswordScreen';
+import SecurityInfoScreen from './screens/SecurityInfoScreen';
 import SecurityLogScreen from './screens/SecurityLogScreen';
 import SettingsScreen from './screens/SettingsScreen';
-import ProfileScreen from './screens/ProfileScreen';
 import SharedWithMeScreen from './screens/SharedWithMeScreen';
+import ShareScreen from './screens/ShareScreen';
 import UploadScreen from './screens/UploadScreen';
-import AccessControlScreen from './screens/AccessControlScreen';
-import CommentsScreen from './screens/CommentsScreen';
-import SecurityInfoScreen from './screens/SecurityInfoScreen';
-import DocumentAnalyticsScreen from './screens/DocumentAnalyticsScreen';
-import OnboardingScreen, { hasCompletedOnboarding } from './screens/OnboardingScreen';
-import KeyGenerationScreen from './screens/KeyGenerationScreen';
+import VerifyLeakScreen from './screens/VerifyLeakScreen';
+import ViewerScreen from './screens/ViewerScreen';
 
 // Notification Handler
 Notifications.setNotificationHandler({
     handleNotification: async () => ({
-        shouldShowAlert: true,
+        // SDK 54: shouldShowAlert is deprecated in favor of banner/list.
+        shouldShowBanner: true,
+        shouldShowList: true,
         shouldPlaySound: true,
         shouldSetBadge: true,
     }),
@@ -158,7 +163,7 @@ const MainTabNavigator = () => {
 };
 
 const RootNavigator = () => {
-    const { isAuthenticated, loading, initialized, user, needsKeyGeneration, completeKeyGeneration, skipKeyGeneration } = useAuth();
+    const { isAuthenticated, loading, initialized, user, needsKeyGeneration, completeKeyGeneration, skipKeyGeneration, passwordRecovery } = useAuth();
     const [showOnboarding, setShowOnboarding] = useState(null);
 
     useEffect(() => {
@@ -171,11 +176,12 @@ const RootNavigator = () => {
     };
 
     if (!initialized || loading || showOnboarding === null) {
-        return (
-            <View style={styles.loadingContainer}>
-                <ActivityIndicator size="large" color={theme.colors.accent.primary} />
-            </View>
-        );
+        return <AnimatedSplash />;
+    }
+
+    // Password recovery deep link takes priority over everything else.
+    if (passwordRecovery) {
+        return <ResetPasswordScreen />;
     }
 
     if (showOnboarding) {
@@ -208,14 +214,11 @@ export default function App() {
         // Initialize memory manager for document caching
         initializeMemoryManager();
 
-        // Initialize expiry notifications
+        // Configure the notification handler. Permission is NOT requested here —
+        // it's requested contextually (see utils/expiryNotifications) the first
+        // time we actually need to schedule a reminder, which is better UX and
+        // aligns with Apple's guidance against eager cold-launch prompts.
         initializeExpiryNotifications();
-
-        // Permission Request
-        const requestPermissions = async () => {
-            const { status } = await Notifications.requestPermissionsAsync();
-        };
-        requestPermissions();
 
         return () => {
             cleanupAnalyticsQueue();
@@ -226,11 +229,13 @@ export default function App() {
         <ErrorBoundary>
             <ThemeProvider>
                 <SafeAreaProvider>
-                    <StatusBar style="auto" />
+                    <StatusBar style="light" />
                     <AuthProvider>
-                        <SessionTimeoutProvider>
-                            <RootNavigator />
-                        </SessionTimeoutProvider>
+                        <PurchasesProvider>
+                            <SessionTimeoutProvider>
+                                <RootNavigator />
+                            </SessionTimeoutProvider>
+                        </PurchasesProvider>
                     </AuthProvider>
                 </SafeAreaProvider>
             </ThemeProvider>

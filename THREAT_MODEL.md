@@ -73,9 +73,12 @@ SecureShare is designed to provide secure document sharing with forensic waterma
 2. **Content Re-sharing**
    - **Invisible Forensic Watermark:** Embedded in document content
    - **Payload:** Document UUID, recipient email, timestamp, device hash
-   - **Survival:** Survives screenshots, camera photos (quality ≥90%), basic edits
-   - **Purpose:** Attribution if content leaks
-   - **Effectiveness:** Probabilistic - higher quality = better survival
+   - **Survival:** Best-effort. May survive high-quality screenshots/photos, but
+     is NOT guaranteed against cropping, resizing, or re-compression.
+   - **Purpose:** Corroborating attribution if content leaks
+   - **Reliable layers:** The visible per-recipient overlay and the owner-signed
+     server provenance registry are the dependable attribution mechanisms;
+     invisible marks are supplementary.
 
 3. **Cropping/Editing**
    - Visible watermark appears in multiple positions
@@ -273,11 +276,25 @@ SecureShare is designed to provide secure document sharing with forensic waterma
 - **Enforcement:** Immediate (expiry, revocation)
 - **Storage:** Supabase Row Level Security (RLS)
 
-### Watermarking
-- **Visible:** Floating overlay with recipient info
-- **Invisible:** Forensic watermark embedded in content
+### Watermarking (layered — reliability decreases top to bottom)
+1. **Visible overlay (reliable):** Floating per-recipient overlay (email + timestamp)
+   rendered on every view. Always present in any screenshot or photo — the one
+   layer that also survives external-camera capture.
+2. **Server provenance registry (deterministic):** At share time the owner
+   registers a SHA-256 hash of each recipient's watermark payload in an
+   append-only, RLS-protected registry, **signed with the owner's RSA private
+   key**. Verification (`verify_watermark_payload`) is non-repudiable: only the
+   owner could have produced the signature, and recipients cannot forge or
+   rewrite registry entries. This is the authoritative "came from SecureShare,
+   issued to X by Y" proof.
+3. **Invisible tracing (best-effort):** Spread-spectrum (images) / zero-width
+   (documents) marks embedded in content. Probabilistic — survival depends on
+   capture quality and is not guaranteed against cropping/re-compression.
+
 - **Payload:** Document UUID, recipient email, timestamp, device hash
-- **Survival:** Probabilistic (quality-dependent)
+- **Integrity:** Owner RSA signature (non-repudiable). The legacy per-file HMAC
+  was keyed on the shared document key and is treated only as a weak offline
+  hint, never as authoritative forensic evidence.
 
 ### Analytics
 - **Collection:** Client-side, batched

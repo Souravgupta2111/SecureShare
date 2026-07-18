@@ -8,10 +8,25 @@
  * - Background scheduling
  */
 
-import * as Notifications from 'expo-notifications';
-import * as Device from 'expo-device';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
+import * as Device from 'expo-device';
+import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import { savePushToken } from '../lib/supabase';
+
+/**
+ * Resolve the EAS projectId at runtime.
+ * EAS injects this into the manifest for production/preview builds, and it can
+ * also be read from app.json `extra.eas.projectId`. We never hard-code it.
+ */
+const getEasProjectId = () => {
+    return (
+        Constants?.expoConfig?.extra?.eas?.projectId ||
+        Constants?.easConfig?.projectId ||
+        null
+    );
+};
 
 const NOTIFICATION_CHANNEL_ID = 'secureshare-alerts';
 const PUSH_TOKEN_KEY = 'secureshare_push_token';
@@ -33,13 +48,15 @@ export const initializeNotifications = async () => {
     // Set up notification handler
     Notifications.setNotificationHandler({
         handleNotification: async () => ({
-            shouldShowAlert: true,
+            // SDK 54: shouldShowAlert is deprecated in favor of banner/list.
+            shouldShowBanner: true,
+            shouldShowList: true,
             shouldPlaySound: true,
             shouldSetBadge: true,
         }),
     });
 
-    // Create Android notification channel
+    // Create Android notification channel (safe regardless of permission state)
     if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_ID, {
             name: 'SecureShare Alerts',
@@ -50,13 +67,13 @@ export const initializeNotifications = async () => {
         });
     }
 
-    // Request permissions
-    const { status } = await requestNotificationPermissions();
-
+    // Do NOT prompt for permission here. Prompting on Home mount is an eager
+    // cold-ish prompt; permission is requested contextually during onboarding
+    // and when scheduling an expiry reminder. Only register a push token if the
+    // user has ALREADY granted permission.
+    const { status } = await Notifications.getPermissionsAsync();
     if (status === 'granted') {
-        // Get push token for remote notifications
-        const token = await registerForPushNotifications();
-        return token;
+        return registerForPushNotifications();
     }
 
     return null;
@@ -87,11 +104,27 @@ export const requestNotificationPermissions = async () => {
  */
 export const registerForPushNotifications = async () => {
     try {
-        const token = await Notifications.getExpoPushTokenAsync({
-            projectId: 'YOUR_EAS_PROJECT_ID', // Replace with actual project ID
-        });
+        const projectId = getEasProjectId();
+        if (!projectId) {
+            // No EAS project configured yet — remote push is unavailable, but
+            // local notifications still work. Fail quietly instead of throwing.
+            console.warn(
+                '[Notifications] No EAS projectId found. Remote push disabled. ' +
+                'Set expo.extra.eas.projectId (via `eas init`) to enable push tokens.'
+            );
+            return null;
+        }
+
+        const token = await Notifications.getExpoPushTokenAsync({ projectId });
 
         await AsyncStorage.setItem(PUSH_TOKEN_KEY, token.data);
+        // Upload the token to the user's profile so the notify-owner Edge
+        // Function can push real-time alerts to them. Best-effort.
+        try {
+            await savePushToken(token.data);
+        } catch (e) {
+            console.warn('[Notifications] Failed to sync push token to profile:', e?.message);
+        }
         return token.data;
     } catch (e) {
         console.error('Failed to get push token:', e);

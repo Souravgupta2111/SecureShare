@@ -1,19 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Pressable, Animated, Image, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import DocumentScanner from 'react-native-document-scanner-plugin';
-import theme from '../theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AnimatedHeader from '../components/AnimatedHeader';
+import { usePurchases } from '../context/PurchasesContext';
+import { getDocumentGrants, supabase, verifyWatermarkPayload } from '../lib/supabase';
+import theme from '../theme';
 import * as watermark from '../utils/watermark';
-import * as storage from '../utils/storage';
-import { supabase, getDocumentGrants } from '../lib/supabase';
 
 const VerifyLeakScreen = ({ route, navigation }) => {
     const params = route.params || {}; // Logic to handle direct tab press vs nav from Detail
     const { preloadedDocument } = params;
+    const insets = useSafeAreaInsets();
+    const { isPro, presentPaywall } = usePurchases();
 
     const [selectedFile, setSelectedFile] = useState(null); // { uri, name, base64, type, ext }
     const [loading, setLoading] = useState(false);
@@ -24,6 +27,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
 
     useEffect(() => {
         if (preloadedDocument) {
+            if (!isPro) { presentPaywall(); return; }
             // Auto-load logic
             // We simulate "loading" the file from the preloaded doc data as if it were a file on disk? 
             // Or we just present it as ready to scan.
@@ -54,6 +58,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
     }, [preloadedDocument]);
 
     const handlePick = () => {
+        if (!isPro) { presentPaywall(); return; }
         Alert.alert(
             "Select File Type",
             "Choose the source of the file to verify",
@@ -294,6 +299,34 @@ const VerifyLeakScreen = ({ route, navigation }) => {
             console.error("Extraction failed", e);
         }
 
+        // ── SERVER-SIDE PROVENANCE CONFIRMATION (deterministic) ──
+        // If we recovered a FULL signed payload (documents always; legacy images),
+        // confirm its hash against the server's immutable watermark registry.
+        // This proves the file came from SecureShare and reveals exactly who it
+        // was issued to — with zero reliance on probabilistic invisible-watermark
+        // recovery. For native spread-spectrum images no full payload is
+        // recoverable, so this step is simply skipped.
+        let provenance = null;
+        try {
+            if (typeof extractedUUID === 'string' && extractedUUID.split('|').length >= 5) {
+                const fullPayload = extractedUUID;
+                const docIdFromPayload = fullPayload.split('|')[0];
+                const payloadHash = await watermark.generateWatermarkHash(fullPayload);
+                const conf = await verifyWatermarkPayload(docIdFromPayload, payloadHash);
+                if (conf && conf.valid) {
+                    provenance = conf;
+                    // Deterministic match — upgrade attribution to certainty.
+                    if (!leakerId && conf.recipient_email) {
+                        leakerId = conf.recipient_email;
+                    }
+                    detectionMethod = 'server-hash';
+                    confidenceScore = 4.0; // deterministic → "Very High"
+                }
+            }
+        } catch (provErr) {
+            console.warn('[VerifyLeak] Provenance confirmation failed:', provErr.message);
+        }
+
         const elapsed = Date.now() - start;
         if (elapsed < 1800) {
             await new Promise(r => setTimeout(r, 1800 - elapsed));
@@ -320,7 +353,8 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                 data: doc || { filename: 'Unknown Document (ID Obscured)', recipients: [] }, 
                 leaker: leakerId, 
                 confidence: confidenceScore, 
-                method: detectionMethod 
+                method: detectionMethod,
+                provenance,
             });
         } else {
             setResult({ status: 'not_found' });
@@ -337,7 +371,7 @@ const VerifyLeakScreen = ({ route, navigation }) => {
     };
 
     return (
-        <View style={styles.container}>
+        <View style={[styles.container, { paddingTop: Math.max(insets.top, 20) }]}>
             <AnimatedHeader title="Verify Leak" showBack={false} />
 
             <View style={styles.content}>
@@ -397,37 +431,74 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                     <Text style={styles.detailRow}><Text style={styles.label}>Shared With:</Text> {result.data.recipients?.map(r => r.email).join(', ') || 'None'}</Text>
                                     
                                     {result.leaker && (() => {
-                                        const getConfidenceLabel = (score) => {
-                                            if (score > 3.0) return { label: 'Very High', color: '#ef4444' };
-                                            if (score > 2.0) return { label: 'High', color: '#f97316' };
-                                            if (score > 1.5) return { label: 'Medium', color: '#eab308' };
-                                            return { label: 'Low', color: '#6b7280' };
-                                        };
+                                        // Deterministic PROOF only comes from a server-hash registry
+                                        // match. Spread-spectrum correlation and OCR are PROBABILISTIC
+                                        // and must be presented as an investigative lead, never as proof.
+                                        const isConfirmed = result.method === 'server-hash'
+                                            || (result.provenance && result.provenance.valid);
+
                                         const getMethodLabel = (method) => {
+                                            if (method === 'server-hash') return { label: 'Server-Verified Hash (Deterministic)', icon: 'server-outline' };
                                             if (method === 'invisible') return { label: 'Spread-Spectrum (Invisible)', icon: 'eye-off-outline' };
                                             if (method === 'visible') return { label: 'OCR Overlay (Visible)', icon: 'eye-outline' };
                                             return { label: 'Legacy Delimiter', icon: 'code-outline' };
                                         };
-                                        const conf = getConfidenceLabel(result.confidence);
                                         const methodInfo = getMethodLabel(result.method);
+
+                                        // Qualitative tier for the probabilistic paths only.
+                                        const probTier = result.confidence > 2.0
+                                            ? { label: 'High likelihood', color: '#f97316' }
+                                            : result.confidence > 1.0
+                                                ? { label: 'Medium likelihood', color: '#eab308' }
+                                                : { label: 'Low likelihood', color: '#6b7280' };
+
+                                        const accent = isConfirmed ? theme.colors.status.error : '#eab308';
+
                                         return (
                                             <>
                                                 <View style={[styles.divider, { marginTop: 12, marginBottom: 12, backgroundColor: 'rgba(255,100,100,0.2)' }]} />
-                                                <Text style={[styles.detailRow, { color: theme.colors.status.error, fontWeight: 'bold' }]}>
-                                                    <Ionicons name="warning" size={16} color={theme.colors.status.error} /> FORENSIC MATCH
+                                                <Text style={[styles.detailRow, { color: accent, fontWeight: 'bold' }]}>
+                                                    <Ionicons name={isConfirmed ? 'shield-checkmark' : 'help-circle'} size={16} color={accent} /> {isConfirmed ? 'CONFIRMED SOURCE' : 'PROBABLE SOURCE (UNCONFIRMED)'}
                                                 </Text>
-                                                <Text style={styles.detailRow}><Text style={styles.label}>Leaked By:</Text> <Text style={{ color: '#fff', fontWeight: 'bold' }}>{result.leaker}</Text></Text>
-                                                {result.confidence > 0 && (
-                                                    <Text style={styles.detailRow}>
-                                                        <Text style={styles.label}>Confidence:</Text> {result.confidence.toFixed(2)} (<Text style={{ color: conf.color }}>{conf.label}</Text>)
-                                                    </Text>
-                                                )}
+                                                <Text style={styles.detailRow}>
+                                                    <Text style={styles.label}>{isConfirmed ? 'Leaked by:' : 'Likely source:'}</Text> <Text style={{ color: '#fff', fontWeight: 'bold' }}>{result.leaker}</Text>
+                                                </Text>
+                                                <Text style={styles.detailRow}>
+                                                    <Text style={styles.label}>Certainty:</Text>{' '}
+                                                    {isConfirmed
+                                                        ? <Text style={{ color: theme.colors.status.active, fontWeight: 'bold' }}>Confirmed (cryptographic)</Text>
+                                                        : <Text style={{ color: probTier.color }}>{probTier.label}{result.confidence > 0 ? ` (${result.confidence.toFixed(2)})` : ''}</Text>}
+                                                </Text>
                                                 <Text style={styles.detailRow}>
                                                     <Text style={styles.label}>Detected Via:</Text> <Ionicons name={methodInfo.icon} size={14} color={theme.colors.accent.blue} /> <Text style={{ color: theme.colors.accent.blue }}>{methodInfo.label}</Text>
                                                 </Text>
+                                                {!isConfirmed && (
+                                                    <Text style={[styles.detailRow, { color: theme.colors.text.muted, fontSize: 12, marginTop: 4 }]}>
+                                                        This is a probabilistic indicator from watermark correlation, not definitive proof. Treat it as an investigative lead, not conclusive evidence.
+                                                    </Text>
+                                                )}
                                             </>
                                         );
                                     })()}
+
+                                    {result.provenance && result.provenance.valid && (
+                                        <>
+                                            <View style={[styles.divider, { marginTop: 12, marginBottom: 12, backgroundColor: 'rgba(52,211,153,0.25)' }]} />
+                                            <Text style={[styles.detailRow, { color: theme.colors.status.active, fontWeight: 'bold' }]}>
+                                                <Ionicons name="shield-checkmark" size={16} color={theme.colors.status.active} /> SERVER-VERIFIED PROVENANCE
+                                            </Text>
+                                            <Text style={styles.detailRow}><Text style={styles.label}>Issued To:</Text> <Text style={{ color: '#fff', fontWeight: 'bold' }}>{result.provenance.recipient_email}</Text></Text>
+                                            <Text style={styles.detailRow}><Text style={styles.label}>Issued By:</Text> {result.provenance.grantor_email || 'Owner'}</Text>
+                                            {result.provenance.issued_at && (
+                                                <Text style={styles.detailRow}>
+                                                    <Text style={styles.label}>Issued On:</Text> {new Date(result.provenance.issued_at).toLocaleString()}
+                                                </Text>
+                                            )}
+                                            <Text style={[styles.detailRow, { color: theme.colors.text.muted, fontSize: 12 }]}>
+                                                Cryptographically matched against the immutable watermark registry.
+                                            </Text>
+                                        </>
+                                    )}
                                 </View>
                                 <Pressable onPress={() => navigation.navigate('My Docs', { screen: 'Detail', params: { document: result.data } })}>
                                     <Text style={styles.link}>View Full Details →</Text>
@@ -440,6 +511,11 @@ const VerifyLeakScreen = ({ route, navigation }) => {
                                 <Text style={styles.resultSubNotFound}>
                                     This file was not shared through SecureShare, or the watermark could not be read.
                                 </Text>
+                                {selectedFile?.type === 'image' && (
+                                    <Text style={[styles.resultSubNotFound, { marginTop: 12, fontSize: 12 }]}>
+                                        Note: images are watermarked when a recipient opens them, so an original or master copy won&apos;t contain a mark. Verify a leaked screenshot or photo of the shared image — not the original file.
+                                    </Text>
+                                )}
                             </View>
                         )}
 

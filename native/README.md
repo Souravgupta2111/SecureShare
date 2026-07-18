@@ -1,135 +1,46 @@
-# Native Security Modules Setup
+# Screen-Capture Security
 
-This document explains how to enable native security features for SecureShare.
+SecureShare protects documents in the viewer using [`expo-screen-capture`](https://docs.expo.dev/versions/latest/sdk/screen-capture/),
+which ships prebuilt native code. There is **no custom native module to copy or
+wire up** and **no config plugin required** — it works in any EAS Dev Client or
+store build automatically via autolinking.
 
-## Overview
+## What it does
 
-SecureShare includes native modules for:
-- **Android FLAG_SECURE** - Blocks screenshots and screen recordings
-- **iOS Screenshot Detection** - Detects and logs screenshot attempts
+| Platform | Screenshots | Screen recording | Recent-apps preview |
+| -------- | ----------- | ---------------- | ------------------- |
+| Android  | Blocked (FLAG_SECURE → black frame) | Blocked | Blanked |
+| iOS      | Detected (listener → blur/log/notify) | Blocked (iOS 11+) | — |
 
-These require **Expo Dev Client** (not Expo Go).
+> iOS cannot technically *prevent* screenshots; the OS only allows detection.
+> This is an Apple platform limitation, documented in `THREAT_MODEL.md`.
 
----
+## How it's used
 
-## Quick Setup
+- `screens/ViewerScreen.js` calls `usePreventScreenCapture()` at the component
+  level, so protection is active for the entire lifetime of the secure viewer.
+- `native/SecurityBridge.js` wraps `expo-screen-capture` behind a small,
+  stable API (`enableSecureMode`, `disableSecureMode`,
+  `startScreenshotDetection`, `stopScreenshotDetection`,
+  `checkSecurityCapabilities`, `getSecurityStatusMessage`) so screens don't
+  depend on the library directly.
 
-### 1. Install Expo Dev Client
+## Building
 
-```bash
-npx expo install expo-dev-client
-```
-
-### 2. Prebuild Native Projects
-
-```bash
-# For both platforms
-npx expo prebuild
-
-# Or for specific platform
-npx expo prebuild --platform android
-npx expo prebuild --platform ios
-```
-
-### 3. Copy Native Module Files
-
-**Android** (after prebuild):
-```bash
-cp native/android/FlagSecureModule.kt android/app/src/main/java/com/secureshare/
-cp native/android/FlagSecurePackage.kt android/app/src/main/java/com/secureshare/
-```
-
-**iOS** (after prebuild):
-```bash
-cp native/ios/ScreenshotDetectorModule.swift ios/SecureShare/
-cp native/ios/ScreenshotDetectorModule.m ios/SecureShare/
-```
-
-### 4. Register Android Package
-
-Edit `android/app/src/main/java/com/secureshare/MainApplication.kt`:
-
-```kotlin
-override fun getPackages(): List<ReactPackage> {
-    val packages = PackageList(this).packages
-    packages.add(FlagSecurePackage())  // Add this line
-    return packages
-}
-```
-
-### 5. Build Dev Client
+No extra steps. Because `expo-screen-capture` is a normal dependency, a standard
+build picks it up:
 
 ```bash
-# Android
-npx expo run:android
-
-# iOS
-npx expo run:ios
+npx expo prebuild --clean   # regenerates native projects
+npx expo run:android        # or run:ios
+# or, for store builds:
+eas build --profile production
 ```
 
----
+## Notes
 
-## How It Works
-
-### Android (FLAG_SECURE)
-When the viewer opens:
-1. `SecurityBridge.enableSecureMode()` is called
-2. Native module sets `FLAG_SECURE` on the Activity window
-3. Screenshots/recordings show black screen
-4. When viewer closes, flag is removed
-
-### iOS (Detection)
-When the viewer opens:
-1. `SecurityBridge.startScreenshotDetection()` is called
-2. Native module listens for `userDidTakeScreenshotNotification`
-3. On screenshot: event emitted → content blurred → alert shown → logged
-4. Screen recording is also detected via `capturedDidChangeNotification`
-
----
-
-## Testing
-
-### In Expo Go (Limited)
-- Watermarks work ✅
-- Analytics work ✅
-- FLAG_SECURE unavailable ❌
-- Screenshot detection limited ❌
-
-### In Dev Client (Full)
-- All features work ✅
-- FLAG_SECURE blocks captures ✅
-- Screenshot detection with blur ✅
-
----
-
-## Troubleshooting
-
-**"FlagSecureModule is null"**
-- You're in Expo Go, not Dev Client
-- Run `npx expo run:android` instead
-
-**"ScreenshotDetectorModule is null"**
-- You're in Expo Go, not Dev Client
-- Run `npx expo run:ios` instead
-
-**Build fails after copying files**
-- Check package name matches `com.secureshare`
-- Ensure bridging header exists for iOS
-
----
-
-## Files Reference
-
-```
-native/
-├── SecurityBridge.js          # JS interface
-├── android/
-│   ├── FlagSecureModule.kt    # FLAG_SECURE implementation
-│   └── FlagSecurePackage.kt   # React Native package
-└── ios/
-    ├── ScreenshotDetectorModule.swift  # Screenshot detection
-    └── ScreenshotDetectorModule.m      # ObjC bridge
-
-plugins/
-└── withSecurityModules.js     # Expo config plugin (auto-setup)
-```
+- The forensic **LSB image watermarking** native module lives separately in
+  `modules/secure-watermark/` (a local Expo module) and is unrelated to screen
+  capture.
+- Inside **Expo Go**, some screen-capture APIs are no-ops; use a Dev Client for
+  full functionality.

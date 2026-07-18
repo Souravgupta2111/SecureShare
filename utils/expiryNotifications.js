@@ -5,8 +5,8 @@
  * Notifies users 24 hours and 1 hour before expiry.
  */
 
-import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 
 const SCHEDULED_NOTIFICATIONS_KEY = 'secureshare_scheduled_notifications';
@@ -22,33 +22,42 @@ const NOTIFICATION_TIMES = {
  */
 export const initializeExpiryNotifications = async () => {
     try {
-        // Request permissions
-        const { status: existingStatus } = await Notifications.getPermissionsAsync();
-        let finalStatus = existingStatus;
-
-        if (existingStatus !== 'granted') {
-            const { status } = await Notifications.requestPermissionsAsync();
-            finalStatus = status;
-        }
-
-        if (finalStatus !== 'granted') {
-            console.log('[ExpiryNotifications] Permission not granted');
-            return false;
-        }
-
-        // Configure notification handler
+        // Configure how notifications are presented while the app is foregrounded.
+        // NOTE: we deliberately do NOT request permission here. Requesting on cold
+        // launch is poor UX and Apple prefers a contextual prompt. Permission is
+        // requested lazily via ensureNotificationPermission() the first time we
+        // actually need to schedule a reminder (i.e. sharing a doc with an expiry).
         Notifications.setNotificationHandler({
             handleNotification: async () => ({
-                shouldShowAlert: true,
+                // SDK 54: shouldShowAlert is deprecated in favor of banner/list.
+                shouldShowBanner: true,
+                shouldShowList: true,
                 shouldPlaySound: true,
                 shouldSetBadge: true,
             }),
         });
 
-        console.log('[ExpiryNotifications] Initialized successfully');
+        console.log('[ExpiryNotifications] Handler configured');
         return true;
     } catch (error) {
         console.error('[ExpiryNotifications] Init error:', error);
+        return false;
+    }
+};
+
+/**
+ * Request notification permission at a contextual moment (right before we
+ * schedule an expiry reminder), rather than eagerly on app launch.
+ * @returns {Promise<boolean>} whether permission is granted
+ */
+export const ensureNotificationPermission = async () => {
+    try {
+        const { status: existingStatus } = await Notifications.getPermissionsAsync();
+        if (existingStatus === 'granted') return true;
+        const { status } = await Notifications.requestPermissionsAsync();
+        return status === 'granted';
+    } catch (error) {
+        console.warn('[ExpiryNotifications] Permission check failed:', error);
         return false;
     }
 };
@@ -60,6 +69,13 @@ export const initializeExpiryNotifications = async () => {
 export const scheduleExpiryNotifications = async (document) => {
     if (!document.expiresAt || !document.id) {
         console.warn('[ExpiryNotifications] Missing required document fields');
+        return;
+    }
+
+    // Contextual permission request — only ask when we actually need to notify.
+    const granted = await ensureNotificationPermission();
+    if (!granted) {
+        console.log('[ExpiryNotifications] Permission not granted; skipping scheduling');
         return;
     }
 
@@ -217,6 +233,7 @@ const getStoredNotifications = async () => {
 
 export default {
     initializeExpiryNotifications,
+    ensureNotificationPermission,
     scheduleExpiryNotifications,
     cancelExpiryNotifications,
     scheduleAllExpiryNotifications,

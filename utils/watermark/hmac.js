@@ -7,8 +7,35 @@
  * Signed payload format: documentUUID|email|timestamp|deviceHash|HMAC_SIGNATURE
  */
 
+import { signData, verifySignature } from '../crypto';
+
 // @ts-ignore — polyfilled by cryptoBootstrap.js
 const webcrypto = globalThis.crypto;
+
+/**
+ * Owner-signed forensic proof.
+ *
+ * Sign a watermark hash with the document OWNER's RSA private key so the
+ * registry entry is non-repudiable: only the owner can produce it, and anyone
+ * can verify it with the owner's public key. This replaces reliance on the
+ * recipient-forgeable HMAC (which was keyed on the shared document AES key).
+ *
+ * @param {string} watermarkHash - SHA-256 hex hash of the signed watermark payload
+ * @param {object} ownerPrivateKey - Imported RSA private key of the document owner
+ * @returns {Promise<string>} base64 RSA signature
+ */
+export const signWatermarkHash = (watermarkHash, ownerPrivateKey) =>
+    signData(watermarkHash, ownerPrivateKey);
+
+/**
+ * Verify an owner watermark signature with the owner's public key.
+ * @param {string} watermarkHash - SHA-256 hex hash that was signed
+ * @param {string} signatureBase64 - base64 RSA signature
+ * @param {object} ownerPublicKey - Imported RSA public key of the document owner
+ * @returns {Promise<boolean>}
+ */
+export const verifyWatermarkHashSignature = (watermarkHash, signatureBase64, ownerPublicKey) =>
+    verifySignature(watermarkHash, signatureBase64, ownerPublicKey);
 
 /**
  * Generate HMAC-SHA256 signature for a watermark payload.

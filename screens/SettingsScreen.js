@@ -1,22 +1,24 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, Switch, TouchableOpacity, Alert, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as SecureStore from 'expo-secure-store';
-import AnimatedHeader from '../components/AnimatedHeader';
-import * as storage from '../utils/storage';
-import { useAuth } from '../context/AuthContext';
-import { useTheme } from '../context/ThemeContext';
-import { setAnalyticsConsent } from '../utils/analyticsQueue';
-import { checkSecurityCapabilities } from '../components/SecurityCapabilitiesBanner';
 import * as Haptics from 'expo-haptics';
+import * as SecureStore from 'expo-secure-store';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Image, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import AnimatedHeader from '../components/AnimatedHeader';
+import { checkSecurityCapabilities } from '../components/SecurityCapabilitiesBanner';
+import { useAuth } from '../context/AuthContext';
+import { usePurchases } from '../context/PurchasesContext';
+import { useTheme } from '../context/ThemeContext';
+import { deleteAllMyDocuments } from '../lib/supabase';
+import { setAnalyticsConsent } from '../utils/analyticsQueue';
+import * as storage from '../utils/storage';
 
 const PRIVATE_KEY_STORAGE_KEY = 'secureshare_private_key';
 
 const SettingsScreen = ({ navigation }) => {
     const { analyticsConsent, errorReportingConsent, updateConsent, user, profile, signOut } = useAuth();
-    const { theme, isDark, themeMode, setThemeMode, toggleTheme } = useTheme();
+    const { theme, isDark } = useTheme();
+    const { isPro, presentPaywall } = usePurchases();
     const [securityAlerts, setSecurityAlerts] = useState(true);
     const [openAlerts, setOpenAlerts] = useState(true);
     const [localAnalyticsConsent, setLocalAnalyticsConsent] = useState(false);
@@ -79,8 +81,21 @@ const SettingsScreen = ({ navigation }) => {
                     text: "Clear",
                     style: "destructive",
                     onPress: async () => {
-                        await storage.clearAllData();
-                        // Reset navigation stack to Home? Or just nav to Home
+                        try {
+                            // Local caches (files, logs, settings)
+                            await storage.clearAllData();
+                            // Cloud documents live in Supabase — delete them too, or
+                            // they'd just reload. Cascades keys/grants/watermarks.
+                            if (user?.id) {
+                                const { error } = await deleteAllMyDocuments(user.id);
+                                if (error) throw error;
+                            }
+                        } catch (e) {
+                            console.warn('[Settings] Clear all data failed:', e?.message);
+                            Alert.alert('Error', 'Could not clear all data. Please try again.');
+                            return;
+                        }
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                         navigation.reset({
                             index: 0,
                             routes: [{ name: 'Home' }],
@@ -103,11 +118,7 @@ const SettingsScreen = ({ navigation }) => {
         await updateConsent('errorReporting', value);
     };
 
-    // Theme mode handlers
-    const handleThemeModeChange = async (mode) => {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        await setThemeMode(mode);
-    };
+
 
     return (
         <View style={styles.container}>
@@ -119,7 +130,7 @@ const SettingsScreen = ({ navigation }) => {
                 <View style={styles.card}>
                     <View style={styles.iconBox}>
                         <Image
-                            source={require('../assets/logo.png')}
+                            source={require('../assets/images/icon.png')}
                             style={{ width: 48, height: 48 }}
                             resizeMode="contain"
                         />
@@ -153,10 +164,32 @@ const SettingsScreen = ({ navigation }) => {
                         style={styles.learnMoreLink}
                         onPress={() => navigation.navigate('SecurityInfo')}
                     >
-                        <Text style={styles.linkText}>What's the difference?</Text>
+                        <Text style={styles.linkText}>What&apos;s the difference?</Text>
                         <Ionicons name="chevron-forward" size={16} color={theme.colors.accent.blue} />
                     </TouchableOpacity>
                 </View>
+
+                {/* SecureShare Pro */}
+                <TouchableOpacity style={styles.card} onPress={presentPaywall} activeOpacity={0.7}>
+                    <View style={styles.row}>
+                        <View style={styles.rowContent}>
+                            <Ionicons name="star" size={20} color={theme.colors.accent.blue} />
+                            <View style={styles.rowTextContainer}>
+                                <Text style={styles.rowTitle}>SecureShare Pro</Text>
+                                <Text style={styles.rowSubtitle}>
+                                    {isPro ? 'Active — thank you!' : 'Unlimited docs, analytics & Verify Leak'}
+                                </Text>
+                            </View>
+                        </View>
+                        {isPro ? (
+                            <View style={[styles.badge, styles.badgeSuccess]}>
+                                <Text style={styles.badgeText}>PRO</Text>
+                            </View>
+                        ) : (
+                            <Ionicons name="chevron-forward" size={20} color={theme.colors.text.muted} />
+                        )}
+                    </View>
+                </TouchableOpacity>
 
                 {/* Encryption Keys Card */}
                 <View style={styles.card}>
@@ -201,40 +234,6 @@ const SettingsScreen = ({ navigation }) => {
                             ⚠️ Without keys, you cannot share or receive encrypted documents
                         </Text>
                     )}
-                </View>
-
-                {/* Appearance */}
-                <Text style={styles.sectionTitle}>APPEARANCE</Text>
-                <View style={styles.card}>
-                    <View style={styles.row}>
-                        <View style={{ flex: 1 }}>
-                            <Text style={styles.rowTitle}>Theme</Text>
-                            <Text style={styles.rowSubtitle}>Choose your preferred appearance</Text>
-                        </View>
-                    </View>
-                    <View style={styles.themeOptions}>
-                        <TouchableOpacity
-                            style={[styles.themeOption, themeMode === 'light' && styles.themeOptionActive]}
-                            onPress={() => handleThemeModeChange('light')}
-                        >
-                            <Ionicons name="sunny" size={20} color={themeMode === 'light' ? theme.colors.accent.primary : theme.colors.text.secondary} />
-                            <Text style={[styles.themeOptionText, themeMode === 'light' && styles.themeOptionTextActive]}>Light</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.themeOption, themeMode === 'dark' && styles.themeOptionActive]}
-                            onPress={() => handleThemeModeChange('dark')}
-                        >
-                            <Ionicons name="moon" size={20} color={themeMode === 'dark' ? theme.colors.accent.primary : theme.colors.text.secondary} />
-                            <Text style={[styles.themeOptionText, themeMode === 'dark' && styles.themeOptionTextActive]}>Dark</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                            style={[styles.themeOption, themeMode === 'system' && styles.themeOptionActive]}
-                            onPress={() => handleThemeModeChange('system')}
-                        >
-                            <Ionicons name="phone-portrait" size={20} color={themeMode === 'system' ? theme.colors.accent.primary : theme.colors.text.secondary} />
-                            <Text style={[styles.themeOptionText, themeMode === 'system' && styles.themeOptionTextActive]}>System</Text>
-                        </TouchableOpacity>
-                    </View>
                 </View>
 
                 {/* Notifications */}
@@ -342,25 +341,6 @@ const SettingsScreen = ({ navigation }) => {
                     </View>
                 </TouchableOpacity>
 
-                {/* Security */}
-                <Text style={styles.sectionTitle}>SECURITY</Text>
-                <TouchableOpacity
-                    style={styles.card}
-                    onPress={() => navigation.navigate('SecurityInfo')}
-                    activeOpacity={0.7}
-                >
-                    <View style={styles.row}>
-                        <View style={styles.rowContent}>
-                            <Ionicons name="shield-checkmark-outline" size={20} color={theme.colors.accent.blue} />
-                            <View style={styles.rowTextContainer}>
-                                <Text style={styles.rowTitle}>Security Features</Text>
-                                <Text style={styles.rowSubtitle}>Learn how your documents are protected</Text>
-                            </View>
-                        </View>
-                        <Ionicons name="chevron-forward" size={20} color={theme.colors.text.muted} />
-                    </View>
-                </TouchableOpacity>
-
                 <View style={styles.footer}>
                     <Text style={styles.footerText}>Built with React Native & Expo</Text>
                     <Text style={styles.copyText}>© 2026 SecureShare</Text>
@@ -443,6 +423,7 @@ const createStyles = (theme, isDark) => StyleSheet.create({
         fontWeight: '500',
     },
     rowContent: {
+        flex: 1,
         flexDirection: 'row',
         alignItems: 'center',
         gap: 12,

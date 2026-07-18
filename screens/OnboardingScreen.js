@@ -5,29 +5,28 @@
  * Includes interactive setup for Biometrics, Notifications, and Privacy Consent.
  */
 
-import React, { useState, useRef, useEffect } from 'react';
-import {
-    View,
-    Text,
-    StyleSheet,
-    Dimensions,
-    Pressable,
-    FlatList,
-    Animated,
-    Switch,
-    Alert,
-    Platform,
-} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import * as Haptics from 'expo-haptics';
-import * as Linking from 'expo-linking';
-import * as Notifications from 'expo-notifications';
-import * as LocalAuthentication from 'expo-local-authentication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Linking from 'expo-linking';
+import * as LocalAuthentication from 'expo-local-authentication';
+import * as Notifications from 'expo-notifications';
+import { useEffect, useRef, useState } from 'react';
+import {
+    Alert,
+    Animated,
+    Dimensions,
+    FlatList,
+    Pressable,
+    StyleSheet,
+    Switch,
+    Text,
+    View
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import theme from '../theme';
 import { useAuth } from '../context/AuthContext';
+import theme from '../theme';
 import { setAnalyticsConsent } from '../utils/analyticsQueue';
 
 const { width } = Dimensions.get('window');
@@ -142,7 +141,7 @@ const OnboardingScreen = ({ onComplete }) => {
     };
 
     const openPrivacyPolicy = () => {
-        Linking.openURL('https://secureshare.app/privacy');
+        Linking.openURL('https://souravgupta2111.github.io/SecureShare/privacy-policy.html');
     };
 
     // --- Security Handlers ---

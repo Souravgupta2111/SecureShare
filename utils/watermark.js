@@ -8,28 +8,20 @@
 
 // Image watermarking (LSB + legacy delimiter)
 export {
-    isNativeLSBAvailable,
-    embedImageWatermarkAsync,
-    embedImageWatermarkFromFileAsync,
-    embedImageWatermark,
-    extractImageWatermarkAsync,
-    extractImageWatermark,
-    verifyImageWatermark,
-    extractPayloadFromMessage,
-    isValidWrappedMessage,
-    getCleanImageBase64,
+    embedImageWatermark, embedImageWatermarkAsync,
+    embedImageWatermarkFromFileAsync, extractImageWatermark, extractImageWatermarkAsync, extractPayloadFromMessage, getCleanImageBase64, isNativeLSBAvailable, isValidWrappedMessage, verifyImageWatermark
 } from './watermark/image';
 
 // Document watermarking (zero-width characters)
 export {
     embedDocumentWatermark,
-    extractDocumentWatermark,
+    extractDocumentWatermark
 } from './watermark/document';
 
 // HMAC signatures & hashing
 export {
-    generateWatermarkSignature,
-    verifyWatermarkSignature,
     createSignedWatermarkPayload,
-    generateWatermarkHash,
+    generateWatermarkHash, generateWatermarkSignature, signWatermarkHash,
+    verifyWatermarkHashSignature, verifyWatermarkSignature
 } from './watermark/hmac';
+

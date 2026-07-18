@@ -13,16 +13,18 @@ jest.mock('react-native-quick-crypto', () => {
 
 // Import our utilities (which will now use Node's webcrypto)
 import {
-    generateKey,
-    encryptData,
     decryptData,
-    generateKeyPair,
-    exportPublicKey,
-    importPublicKey,
-    exportPrivateKey,
-    importPrivateKey,
+    decryptKey,
+    encryptData,
     encryptKey,
-    decryptKey
+    exportPrivateKey,
+    exportPublicKey,
+    generateKey,
+    generateKeyPair,
+    importPrivateKey,
+    importPublicKey,
+    signData,
+    verifySignature
 } from '../utils/crypto';
 
 describe('End-to-End Secure Sharing Flow', () => {
@@ -102,5 +104,26 @@ describe('End-to-End Secure Sharing Flow', () => {
 
         // Assert pure equivalence
         expect(decryptedDocBase64).toBe(SECRET_DOC_CONTENT);
+    });
+
+    test('Owner watermark signature is non-repudiable and unforgeable', async () => {
+        // The owner (Alice) signs a watermark hash with her private key.
+        const watermarkHash = 'a'.repeat(64); // stand-in for a SHA-256 hex hash
+        const alicePriv = await importPrivateKey(alice.privPem);
+        const alicePub = await importPublicKey(alice.pubPem);
+        const bobPub = await importPublicKey(bob.pubPem);
+
+        const signature = await signData(watermarkHash, alicePriv);
+        expect(typeof signature).toBe('string');
+        expect(signature.length).toBeGreaterThan(0);
+
+        // Anyone can verify with Alice's PUBLIC key -> proves Alice signed it.
+        expect(await verifySignature(watermarkHash, signature, alicePub)).toBe(true);
+
+        // A recipient (Bob) cannot pass verification with a different public key.
+        expect(await verifySignature(watermarkHash, signature, bobPub)).toBe(false);
+
+        // Tampering with the signed data fails verification.
+        expect(await verifySignature('b'.repeat(64), signature, alicePub)).toBe(false);
     });
 });

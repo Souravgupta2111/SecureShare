@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, Pressable } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import theme from '../theme';
+import { useCallback, useState } from 'react';
+import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AnimatedHeader from '../components/AnimatedHeader';
+import theme from '../theme';
 import * as storage from '../utils/storage';
 
 const FILTERS = ['All', 'Screenshots', 'Recordings', 'Copy Attempts'];
@@ -10,6 +11,7 @@ const FILTERS = ['All', 'Screenshots', 'Recordings', 'Copy Attempts'];
 const SecurityLogScreen = ({ navigation }) => {
     const [events, setEvents] = useState([]);
     const [filter, setFilter] = useState('All');
+    const insets = useSafeAreaInsets();
 
     const loadEvents = async () => {
         const all = await storage.getAllSecurityEvents();
@@ -71,7 +73,7 @@ const SecurityLogScreen = ({ navigation }) => {
     };
 
     return (
-        <View style={styles.container}>
+        <View style={[styles.container, { paddingTop: Math.max(insets.top, 20) }]}>
             <AnimatedHeader title="Security Log" showBack={false} />
 
             {/* Filters */}
@@ -136,6 +138,7 @@ const styles = StyleSheet.create({
     filterContainer: {
         height: 50,
         justifyContent: 'center',
+        marginTop: 6,
         marginBottom: 8,
     },
     filterPill: {

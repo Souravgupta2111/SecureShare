@@ -5,24 +5,24 @@
  * Similar to Google Drive's "Shared with me" section.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { useCallback, useEffect, useState } from 'react';
 import {
-    View,
-    Text,
-    StyleSheet,
+    ActivityIndicator,
+    Alert,
     FlatList,
     Pressable,
     RefreshControl,
-    ActivityIndicator,
-    Alert,
+    StyleSheet,
+    Text,
+    View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Haptics from 'expo-haptics';
-import { useAuth } from '../context/AuthContext';
-import { getSharedWithMe } from '../lib/supabase';
 import AnimatedHeader from '../components/AnimatedHeader';
 import SkeletonLoader from '../components/SkeletonLoader';
+import { useAuth } from '../context/AuthContext';
+import { getSharedWithMe } from '../lib/supabase';
 import theme from '../theme';
 
 const SharedWithMeScreen = ({ navigation }) => {
@@ -183,7 +183,7 @@ const SharedWithMeScreen = ({ navigation }) => {
 
     if (loading) {
         return (
-            <View style={styles.container}>
+            <View style={[styles.container, { paddingTop: Math.max(insets.top, 20) }]}>
                 <AnimatedHeader title="Shared with Me" />
                 <View style={styles.loadingContainer}>
                     <SkeletonLoader type="list" />
@@ -193,7 +193,7 @@ const SharedWithMeScreen = ({ navigation }) => {
     }
 
     return (
-        <View style={styles.container}>
+        <View style={[styles.container, { paddingTop: Math.max(insets.top, 20) }]}>
             <AnimatedHeader title="Shared with Me" />
 
             <FlatList

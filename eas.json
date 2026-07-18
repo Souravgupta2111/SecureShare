@@ -5,6 +5,7 @@
     },
     "build": {
         "development": {
+            "environment": "development",
             "developmentClient": true,
             "distribution": "internal",
             "ios": {
@@ -18,6 +19,7 @@
             }
         },
         "preview": {
+            "environment": "preview",
             "distribution": "internal",
             "ios": {
                 "simulator": false
@@ -30,6 +32,7 @@
             }
         },
         "production": {
+            "environment": "production",
             "distribution": "store",
             "autoIncrement": true,
             "ios": {
@@ -45,10 +48,6 @@
     },
     "submit": {
         "production": {
-            "ios": {
-                "appleId": "your-apple-id@example.com",
-                "ascAppId": "YOUR_APP_STORE_CONNECT_APP_ID"
-            },
             "android": {
                 "serviceAccountKeyPath": "./path-to-service-account.json",
                 "track": "internal"

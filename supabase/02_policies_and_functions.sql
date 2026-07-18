@@ -462,7 +462,19 @@ RETURNS UUID AS $$
 DECLARE
   v_result_id UUID;
   v_email TEXT := LOWER(p_recipient_email);
+  v_grantor UUID := auth.uid();
 BEGIN
+  -- AUTHORIZATION: this RPC is SECURITY DEFINER and bypasses RLS, so ownership
+  -- MUST be enforced here. Only the document owner may register/rotate a
+  -- watermark hash. Without this check any authenticated user could revoke
+  -- (status='revoked') or poison another owner's forensic registry by passing
+  -- an arbitrary p_document_id.
+  IF NOT public.is_document_owner(p_document_id) THEN
+    RAISE EXCEPTION 'not_authorized: only the document owner can store watermark hashes';
+  END IF;
+
+  -- Trust the authenticated caller for grantor identity, NEVER the client-supplied
+  -- p_grantor_id argument (kept only for backwards-compatible call signature).
   UPDATE public.document_watermark_hashes
   SET status = 'revoked'
   WHERE document_id = p_document_id AND recipient_email = v_email;
@@ -471,7 +483,7 @@ BEGIN
     document_id, recipient_email, grantor_id,
     watermark_hash, hmac_signature, device_hash, status
   ) VALUES (
-    p_document_id, v_email, p_grantor_id,
+    p_document_id, v_email, v_grantor,
     p_watermark_hash, p_hmac_signature, p_device_hash, 'active'
   ) RETURNING id INTO v_result_id;
 
@@ -518,10 +530,12 @@ CREATE OR REPLACE FUNCTION public.verify_watermark_signature(
 RETURNS JSONB AS $$
 DECLARE
   v_grantor_id UUID;
+  v_recipient_email TEXT;
   v_owner_public_key TEXT;
+  v_caller_email TEXT := LOWER(auth.jwt() ->> 'email');
 BEGIN
-  SELECT w.grantor_id
-  INTO v_grantor_id
+  SELECT w.grantor_id, w.recipient_email
+  INTO v_grantor_id, v_recipient_email
   FROM public.document_watermark_hashes w
   WHERE w.document_id = p_document_id
     AND w.watermark_hash = p_watermark_hash
@@ -529,6 +543,12 @@ BEGIN
 
   IF NOT FOUND THEN
     RETURN jsonb_build_object('valid', false, 'confidence', 'none', 'error', 'watermark_not_found');
+  END IF;
+
+  -- AUTHORIZATION: only the owner or the named recipient may verify (prevents
+  -- probing the registry / email enumeration by arbitrary authenticated users).
+  IF NOT (v_grantor_id = auth.uid() OR LOWER(v_recipient_email) = v_caller_email) THEN
+    RETURN jsonb_build_object('valid', false, 'confidence', 'none', 'error', 'not_authorized');
   END IF;
 
   SELECT public_key INTO v_owner_public_key

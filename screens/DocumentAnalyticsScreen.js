@@ -7,26 +7,36 @@
  * - Access management (revoke)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-    View,
-    Text,
-    StyleSheet,
-    ScrollView,
-    RefreshControl,
-    Pressable,
-    Alert,
-} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import { useCallback, useEffect, useState } from 'react';
+import {
+    Alert,
+    Pressable,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AnimatedHeader from '../components/AnimatedHeader';
+import { usePurchases } from '../context/PurchasesContext';
 import { getDocumentAnalyticsSummary, getSecurityEvents, revokeAccessToken } from '../lib/supabase';
 import theme from '../theme';
 
 const DocumentAnalyticsScreen = ({ route, navigation }) => {
     const { documentId, documentName, recipients } = route.params;
     const insets = useSafeAreaInsets();
+    const { isPro, presentPaywall } = usePurchases();
+
+    // Analytics is a Pro feature — bounce free users to the paywall.
+    useEffect(() => {
+        if (!isPro) {
+            presentPaywall();
+            navigation.goBack();
+        }
+    }, [isPro, presentPaywall, navigation]);
 
     const [analytics, setAnalytics] = useState([]);
     const [securityEvents, setSecurityEvents] = useState([]);

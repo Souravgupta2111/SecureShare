@@ -4,18 +4,17 @@
  * This screen helps users understand how their documents are protected.
  */
 
-import React from 'react';
-import {
-    View,
-    Text,
-    StyleSheet,
-    ScrollView,
-    Pressable,
-    Platform,
-} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import {
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    View,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import theme from '../theme';
 
 const SecurityInfoScreen = ({ navigation }) => {
@@ -33,7 +32,7 @@ const SecurityInfoScreen = ({ navigation }) => {
             title: 'End-to-End Encryption',
             description: 'Your documents are encrypted using AES-256-GCM directly on your device before being uploaded. The encryption keys never leave your device.',
             details: [
-                'Military-grade AES-256 encryption',
+                'AES-256-GCM encryption',
                 'Keys stored in device secure enclave',
                 'Zero-knowledge architecture — we can\'t read your files',
             ],
@@ -74,13 +73,14 @@ const SecurityInfoScreen = ({ navigation }) => {
         {
             icon: 'water',
             color: theme.colors.accent.gold,
-            title: 'Invisible Watermarking',
-            description: 'Every shared document contains an invisible watermark with the recipient\'s identity information.',
+            title: 'Forensic Watermarking',
+            description: 'Shared documents carry layered watermarks so leaks can be traced back to a recipient.',
             details: [
-                'HMAC-signed for tamper detection',
-                'Traces leaks to source',
-                'Survives most image processing',
+                'Visible per-recipient overlay on every view',
+                'Owner-signed provenance registry (server-verified)',
+                'Invisible tracing marks (best-effort)',
             ],
+            warning: 'Invisible marks may not survive heavy cropping or re-compression. The visible overlay and server provenance record are the reliable layers.',
         },
         {
             icon: 'time',

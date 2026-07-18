@@ -98,8 +98,17 @@ export const embedDocumentWatermark = (fileData, fileExtension, payload) => {
     const ext = fileExtension.toLowerCase().replace('.', '');
 
     if (ext === 'docx') {
-        const bytes = embedDocx(fileData, zwPayload);
-        return encodeBase64(bytes);
+        // DOCX is a ZIP archive. Injecting raw zero-width bytes into the
+        // compressed stream (or after the ZIP EOCD record) corrupts the file
+        // and does NOT reliably embed anything, because the </w:body> marker
+        // lives inside a DEFLATE-compressed entry, not in the raw bytes.
+        // Rather than risk delivering a corrupt document, we skip in-file
+        // embedding for DOCX. Forensic provenance is still preserved server-side
+        // via documents.watermark_payload + the document_watermark_hashes
+        // registry — only the in-file (leaked-copy) watermark is unavailable.
+        // Proper DOCX watermarking requires unzip -> edit document.xml -> rezip.
+        console.warn('[Watermark/Document] DOCX in-file watermarking is disabled (would corrupt the ZIP). Server-side forensic hash is still stored.');
+        return fileData; // pass through unchanged — no corruption
     }
     if (ext === 'pdf') {
         const bytes = embedPdf(fileData, zwPayload);

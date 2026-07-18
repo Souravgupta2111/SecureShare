@@ -1,23 +1,23 @@
-import React, { useState, useRef, useCallback, memo, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Animated, Modal, Alert, ActivityIndicator, Platform, InteractionManager } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
+import { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, Modal, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { v4 as uuidv4 } from 'uuid';
-import PropTypes from 'prop-types';
-import theme from '../theme';
 import AnimatedHeader from '../components/AnimatedHeader';
 import SuccessAnimation from '../components/SuccessAnimation';
-import * as watermark from '../utils/watermark';
-import * as storage from '../utils/storage';
 import { useAuth } from '../context/AuthContext';
-import * as SecureStore from 'expo-secure-store';
-import { uploadOnlineDocument, saveDocumentKey, grantAccess, getProfileByEmail, storeWatermarkHash, updateProfile, getProfile } from '../lib/supabase';
-import { generateKey, encryptData, encryptKey, importPublicKey, checkFileSize } from '../utils/crypto';
+import { FREE_DOC_LIMIT, usePurchases } from '../context/PurchasesContext';
+import { createInvite, getMyDocumentCount, getProfile, getProfileByEmail, grantAccess, saveDocumentKey, storeWatermarkHash, uploadOnlineDocument } from '../lib/supabase';
+import theme from '../theme';
+import { checkFileSize, encryptData, encryptKey, generateInviteSecret, generateKey, importPrivateKey, importPublicKey, MAX_FILE_SIZE_BYTES, wrapKeyWithSecret } from '../utils/crypto';
+import { getPrivateKeyPem } from '../utils/CryptoService';
 import { generateDeviceHash } from '../utils/deviceSecurity';
+import * as storage from '../utils/storage';
+import * as watermark from '../utils/watermark';
 
 // Max image size for compression (1MB in base64 is ~750KB decoded)
 const MAX_IMAGE_SIZE = 1024 * 1024; // 1MB
@@ -39,6 +39,7 @@ const EXPIRY_OPTIONS = [
 
 const ShareScreen = ({ navigation }) => {
     const { user, isAuthenticated, profile, refreshProfile } = useAuth();
+    const { isPro, presentPaywall } = usePurchases();
     const [currentProfile, setCurrentProfile] = useState(profile);
     const [selectedFile, setSelectedFile] = useState(null); // { uri, name, size, type, mimeType, base64? }
 
@@ -137,6 +138,13 @@ const ShareScreen = ({ navigation }) => {
                 }
 
                 if (fileData) {
+                    // Enforce the same size limit as the Upload flow to avoid
+                    // out-of-memory crashes on low-end devices.
+                    if (fileData.size && !checkFileSize(fileData.size)) {
+                        const maxMb = Math.round(MAX_FILE_SIZE_BYTES / (1024 * 1024));
+                        Alert.alert('File too large', `Please select a file under ${maxMb}MB.`);
+                        return;
+                    }
                     setSelectedFile(fileData);
                 }
             } catch (e) {
@@ -210,12 +218,34 @@ const ShareScreen = ({ navigation }) => {
 
             if (shareMode === 'online' && isAuthenticated) {
                 // --- ONLINE SHARING MODE ---
+                // Free plan is limited to FREE_DOC_LIMIT documents.
+                if (!isPro) {
+                    const { count } = await getMyDocumentCount(user.id);
+                    if (count >= FREE_DOC_LIMIT) {
+                        setLoading(false);
+                        presentPaywall();
+                        return;
+                    }
+                }
+
                 // 1. Generate document UUID and device hash
                 const documentUUID = uuidv4();
                 const deviceHash = await generateDeviceHash();
 
                 // 2. Generate encryption key (will also be used for HMAC)
                 const key = await generateKey();
+
+                // 2b. Load the owner's RSA private key so we can produce
+                // NON-REPUDIABLE watermark signatures (only the owner can sign;
+                // recipients cannot forge). Best-effort — falls back to the
+                // legacy embedded HMAC if the key isn't available.
+                let ownerPrivKey = null;
+                try {
+                    const ownerPrivPem = await getPrivateKeyPem();
+                    if (ownerPrivPem) ownerPrivKey = await importPrivateKey(ownerPrivPem);
+                } catch (keyErr) {
+                    console.warn('[Share] Could not load owner key for watermark signing:', keyErr.message);
+                }
 
                 // 3. Create SIGNED watermark payload with HMAC signature
                 // Format: documentUUID|email|timestamp|deviceHash|HMAC_SIGNATURE
@@ -266,11 +296,16 @@ const ShareScreen = ({ navigation }) => {
                 // 6. Store watermark hash for forensic verification (Sender's Master Watermark)
                 try {
                     const watermarkHash = await watermark.generateWatermarkHash(signedWatermarkPayload);
+                    // NON-REPUDIABLE: sign the hash with the owner's private key when
+                    // available; fall back to the embedded HMAC only as a last resort.
+                    const masterSignature = ownerPrivKey
+                        ? await watermark.signWatermarkHash(watermarkHash, ownerPrivKey)
+                        : signedWatermarkPayload.split('|').pop();
                     const { error: hashError } = await storeWatermarkHash({
                         document_id: docData.id,
                         recipient_email: user.email,
                         watermark_hash: watermarkHash,
-                        hmac_signature: signedWatermarkPayload.split('|').pop(),
+                        hmac_signature: masterSignature,
                         device_hash: deviceHash
                     });
                     if (hashError) console.warn('[Share] Failed to store master watermark hash:', hashError);
@@ -332,6 +367,29 @@ const ShareScreen = ({ navigation }) => {
 
                 for (const recipientEmail of recipients) {
                     try {
+                        // 0) Register a PER-RECIPIENT forensic watermark record (owner-signed).
+                        // This gives the registry a distinct, attributable entry per
+                        // recipient so leak verification can name the exact recipient
+                        // (rather than only the owner's master watermark).
+                        try {
+                            const recipientPayload = await watermark.createSignedWatermarkPayload(
+                                documentUUID, recipientEmail, deviceHash, key
+                            );
+                            const recipientHash = await watermark.generateWatermarkHash(recipientPayload);
+                            const recipientSignature = ownerPrivKey
+                                ? await watermark.signWatermarkHash(recipientHash, ownerPrivKey)
+                                : recipientPayload.split('|').pop();
+                            await storeWatermarkHash({
+                                document_id: docData.id,
+                                recipient_email: recipientEmail,
+                                watermark_hash: recipientHash,
+                                hmac_signature: recipientSignature,
+                                device_hash: deviceHash
+                            });
+                        } catch (regErr) {
+                            console.warn(`[Share] Per-recipient watermark registry failed for ${recipientEmail}:`, regErr.message);
+                        }
+
                         // a) Get Recipient Profile (for Public Key)
                         const { data: recipientProfile, error: profileError } = await getProfileByEmail(recipientEmail);
 
@@ -375,6 +433,33 @@ const ShareScreen = ({ navigation }) => {
                 // 8. Success - show appropriate messages
                 setLoading(false);
 
+                // Create a universal, end-to-end-encrypted invite link. The document
+                // key is wrapped with a random secret that lives ONLY inside the link
+                // fragment (never sent to the server), so anyone who opens the link —
+                // even someone not yet on SecureShare — can decrypt the document.
+                let inviteLink = null;
+                try {
+                    const inviteSecret = await generateInviteSecret();
+                    const wrappedKey = await wrapKeyWithSecret(key, inviteSecret);
+                    const { data: invite, error: invErr } = await createInvite({
+                        document_id: docData.id,
+                        wrapped_key: wrappedKey,
+                        recipient_email: recipients[0] || null,
+                    });
+                    if (!invErr && invite?.token) {
+                        inviteLink = `secureshare://invite?token=${invite.token}#k=${inviteSecret}`;
+                    }
+                } catch (linkErr) {
+                    console.warn('[Share] Invite link creation failed:', linkErr.message);
+                }
+                const shareLink = () => {
+                    if (inviteLink) {
+                        Share.share({
+                            message: `I've shared a secure document with you. Open it in SecureShare:\n\n${inviteLink}`,
+                        }).catch(() => {});
+                    }
+                };
+
                 // Show error if any recipients failed completely
                 if (failedRecipients.length > 0) {
                     Alert.alert(
@@ -390,15 +475,21 @@ const ShareScreen = ({ navigation }) => {
                     );
                 }
 
-                // Show warning if some recipients are not yet registered
-                if (pendingRecipients.length > 0) {
-                    Alert.alert(
-                        'Shared with Pending Recipients',
-                        `Document shared! However, these recipients need to register and set up their security keys before they can decrypt:\n\n${pendingRecipients.join('\n')}\n\nYou can re-share the key later from Access Control once they're set up.`,
-                        [{ text: 'Got it', onPress: () => setShowSuccess(true) }]
-                    );
-                } else if (failedRecipients.length === 0) {
-                    setShowSuccess(true);
+                // Offer the universal secure link (covers registered users AND
+                // anyone not yet on SecureShare).
+                if (failedRecipients.length === 0) {
+                    if (inviteLink) {
+                        Alert.alert(
+                            'Document Shared',
+                            'Registered recipients will see it in “Shared with Me”. To share with anyone else — even people not on SecureShare yet — send them the secure link. Whoever opens it can decrypt the document.',
+                            [
+                                { text: 'Send Secure Link', onPress: () => { shareLink(); setShowSuccess(true); } },
+                                { text: 'Done', style: 'cancel', onPress: () => setShowSuccess(true) },
+                            ]
+                        );
+                    } else {
+                        setShowSuccess(true);
+                    }
                 }
             } else {
                 // --- LOCAL SHARING MODE ---

@@ -169,9 +169,43 @@ export const decryptData = async (encryptedInput: string | Uint8Array | ArrayBuf
     return new TextDecoder().decode(decrypted);
 };
 
-/** Check if file size is within safe processing limits (15 MB) */
+// ============================================================================
+// INVITE-LINK KEY WRAPPING (symmetric, for sharing to not-yet-registered users)
+//
+// The document's AES key is wrapped under a random "invite secret" that only
+// ever travels inside the invite link fragment (never sent to the server). The
+// recipient reads the secret from the link, unwraps the document key, and
+// re-wraps it with their own RSA public key. Keeps sharing end-to-end encrypted
+// even for people who aren't on the app yet.
+// ============================================================================
+
+/** Wrap a hex key with a hex secret (AES-256-GCM). Returns base64(iv+ciphertext). */
+export const wrapKeyWithSecret = async (keyHex: string, secretHex: string): Promise<string> => {
+    const combined = await encryptData(keyHex, secretHex); // Uint8Array (iv + ciphertext)
+    let binary = '';
+    for (let i = 0; i < combined.length; i++) binary += String.fromCharCode(combined[i]);
+    return (global.btoa || btoa)(binary);
+};
+
+/** Unwrap a key wrapped by wrapKeyWithSecret. Returns the original hex key. */
+export const unwrapKeyWithSecret = async (wrappedBase64: string, secretHex: string): Promise<string> => {
+    return await decryptData(wrappedBase64, secretHex);
+};
+
+/** Generate a random 256-bit invite secret (hex). */
+export const generateInviteSecret = generateKey;
+
+/**
+ * Maximum file size we process in a single in-memory pass.
+ * Kept conservative (10 MB) because encryption/watermarking buffers the whole
+ * file in memory, which can OOM low-end Android devices for larger files.
+ * This is the single source of truth for both the Upload and Share flows.
+ */
+export const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+/** Check if file size is within safe processing limits (see MAX_FILE_SIZE_BYTES). */
 export const checkFileSize = (sizeBytes: number): boolean => {
-    return sizeBytes <= 15 * 1024 * 1024;
+    return sizeBytes <= MAX_FILE_SIZE_BYTES;
 };
 
 // ============================================================================
@@ -179,58 +213,52 @@ export const checkFileSize = (sizeBytes: number): boolean => {
 // ============================================================================
 
 /**
- * Generate RSA-2048 Key Pair.
- * Tries WebCrypto (native C++, <100ms) first.
- * Falls back to node-forge (pure JS, 3-10s) if WebCrypto RSA is unavailable.
+ * Generate an RSA-2048 key pair using node-forge.
+ *
+ * We use node-forge (pure JS) rather than WebCrypto for generation because
+ * `react-native-quick-crypto`'s subtle.generateKey for RSA-OAEP is not reliably
+ * available across the RN targets we ship to. Forge keeps the whole crypto
+ * round-trip (generate → wrap → unwrap) inside one implementation, which avoids
+ * cross-library OAEP interop risk.
+ *
+ * PERFORMANCE: this uses forge's *async* callback API, which splits the prime
+ * search into chunks and yields to the event loop between them. That keeps the
+ * JS thread responsive and avoids Android ANR ("Application Not Responding")
+ * kills. Typical time is a few seconds on mid/low-end devices, so callers
+ * (see KeyGenerationScreen) show a progress UI. Generation is also deferred
+ * until first needed rather than run during app startup.
  */
 export const generateKeyPair = async (): Promise<ForgeKeyPair> => {
-    console.log('[Crypto] generateKeyPair called');
     const startTime = Date.now();
-    console.log('[Crypto] Using node-forge RSA generation...');
+    console.log('[Crypto] Generating RSA-2048 key pair (node-forge, async)...');
 
-    // Optimization 1: Seed forge's PRNG with native random bytes.
-    // This gives forge high-quality entropy for prime candidate selection,
-    // reducing the number of iterations needed to find suitable primes.
+    // Seed forge's PRNG with native CSPRNG bytes. This gives forge high-quality
+    // entropy for prime candidate selection.
     try {
         const seed = new Uint8Array(64);
         webcrypto.getRandomValues(seed);
         const seedStr = Array.from(seed).map(b => String.fromCharCode(b)).join('');
         forge.random.collect(seedStr);
-        console.log('[Crypto] Forge PRNG seeded with native random bytes');
     } catch (e) {
         console.warn('[Crypto] Could not seed forge PRNG:', e);
     }
 
-    const KEYGEN_TIMEOUT_MS = 30000;
-    let timeoutId: any;
+    const KEYGEN_TIMEOUT_MS = 60000;
 
-    // Optimization 2: Use forge's async callback API.
-    // This yields to the event loop periodically so the UI stays responsive
-    // and avoids Android ANR (Application Not Responding) kills.
-    const keyPair = await Promise.race([
-        new Promise<any>((resolve, reject) => {
-            // Small delay to let UI render before heavy CPU work
-            setTimeout(() => {
-                try {
-                    console.log('[Crypto] Starting forge prime generation...');
-                    const keys = forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 });
-                    resolve(keys);
-                } catch (err) {
-                    reject(err);
-                }
-            }, 200);
-        }),
-        new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => reject(new Error(
-                'Key generation timed out (>30s). Please try again.'
-            )), KEYGEN_TIMEOUT_MS);
-        }),
-    ]);
+    const keyPair = await new Promise<any>((resolve, reject) => {
+        const timeoutId = setTimeout(() => reject(new Error(
+            'Key generation timed out. Please try again.'
+        )), KEYGEN_TIMEOUT_MS);
 
-    if (timeoutId) clearTimeout(timeoutId);
+        // Async callback API — non-blocking prime generation.
+        forge.pki.rsa.generateKeyPair({ bits: 2048, e: 0x10001 }, (err: any, keys: any) => {
+            clearTimeout(timeoutId);
+            if (err) reject(err);
+            else resolve(keys);
+        });
+    });
 
-    const elapsed = Date.now() - startTime;
-    console.log(`[Crypto] RSA generated in ${elapsed}ms (node-forge async)`);
+    console.log(`[Crypto] RSA-2048 generated in ${Date.now() - startTime}ms`);
 
     return { publicKey: keyPair.publicKey, privateKey: keyPair.privateKey, _isForge: true };
 };
@@ -317,6 +345,49 @@ export const encryptKey = async (aesKeyHex: string, publicKey: any): Promise<str
     const data = new TextEncoder().encode(aesKeyHex);
     const encrypted = await webcrypto.subtle.encrypt({ name: 'RSA-OAEP' }, publicKey, data);
     return arrayBufferToBase64(encrypted);
+};
+
+// ============================================================================
+// RSA DIGITAL SIGNATURES (RSASSA-PKCS1-v1.5 + SHA-256)
+//
+// Used to make watermark provenance NON-REPUDIABLE: the document owner signs
+// with their RSA private key (which only they hold), and anyone can verify with
+// the owner's public key. Unlike an HMAC keyed on the shared document key, a
+// recipient cannot forge or rewrite an owner signature.
+// ============================================================================
+
+/** Sign a UTF-8 string with an RSA private key. Returns a base64 signature. */
+export const signData = async (data: string, privateKey: any): Promise<string> => {
+    if (privateKey._isForge || privateKey.d) {
+        const md = forge.md.sha256.create();
+        md.update(data, 'utf8');
+        const signature = privateKey.sign(md);
+        return forge.util.encode64(signature);
+    }
+    // WebCrypto fallback (key must be imported for RSASSA-PKCS1-v1_5 / sign)
+    const enc = new TextEncoder().encode(data);
+    const sig = await webcrypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, privateKey, enc);
+    return arrayBufferToBase64(sig);
+};
+
+/** Verify an RSA signature (base64) over a UTF-8 string with an RSA public key. */
+export const verifySignature = async (data: string, signatureBase64: string, publicKey: any): Promise<boolean> => {
+    try {
+        if (publicKey._isForge || publicKey.n) {
+            const md = forge.md.sha256.create();
+            md.update(data, 'utf8');
+            const signature = forge.util.decode64(signatureBase64);
+            return publicKey.verify(md.digest().bytes(), signature);
+        }
+        const enc = new TextEncoder().encode(data);
+        const binary = (global.atob || atob)(signatureBase64);
+        const sigBuf = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) sigBuf[i] = binary.charCodeAt(i);
+        return await webcrypto.subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, publicKey, sigBuf, enc);
+    } catch (e) {
+        console.warn('[Crypto] verifySignature failed:', e);
+        return false;
+    }
 };
 
 /** Decrypt AES key with my RSA private key (RSA-OAEP) */

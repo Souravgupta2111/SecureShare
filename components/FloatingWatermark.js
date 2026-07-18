@@ -1,229 +1,145 @@
 /**
- * FloatingWatermark Component
- * 
- * Dynamic visible watermark that moves across the screen
- * to deter camera capture and ensure attribution.
+ * Visible Watermark
+ *
+ * Two layers:
+ *  - WatermarkBackground: a clean, uniform diagonal tiled watermark (standard
+ *    DRM style) that covers the whole screen for attribution + camera deterrence.
+ *  - FloatingWatermark: a single subtle, slowly drifting attribution line that
+ *    also shows the timestamp, so a photo of the screen captures live proof.
  */
 
-import React, { useEffect, useRef, memo } from 'react';
-import { View, Text, StyleSheet, Dimensions, Animated } from 'react-native';
+import { memo, useEffect, useRef } from 'react';
+import { Animated, Dimensions, StyleSheet, Text, View } from 'react-native';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-// Watermark dimensions
-const WATERMARK_WIDTH = 280;
-const WATERMARK_HEIGHT = 40;
-const PADDING = 20;
+const shortTrk = (documentId) => (documentId ? String(documentId).substring(0, 8) : null);
 
-// Animation config
-const MIN_INTERVAL = 3000; // 3 seconds
-const MAX_INTERVAL = 7000; // 7 seconds
+// ---------------------------------------------------------------------------
+// Uniform diagonal tiled watermark (the primary visible mark)
+// ---------------------------------------------------------------------------
+export const WatermarkBackground = memo(function WatermarkBackground({ recipientEmail, documentId }) {
+    const label = recipientEmail || 'SecureShare';
+    const trk = shortTrk(documentId);
+    const line = trk ? `${label}   ·   TRK-${trk}` : label;
 
-const FloatingWatermarkItem = memo(function FloatingWatermarkItem({ recipientEmail, timestamp, documentId, delayOffset }) {
-    const positionX = useRef(new Animated.Value(0)).current;
-    const positionY = useRef(new Animated.Value(0)).current;
-    const rotation = useRef(new Animated.Value(0)).current;
-    const opacity = useRef(new Animated.Value(0.15)).current;
+    const TILE_W = 230;
+    const TILE_H = 96;
 
-    // Format timestamp for display
-    const formatTime = () => {
-        const date = new Date(timestamp || Date.now());
-        return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-    };
+    // Oversize the rotated layer so the corners stay covered after rotation.
+    const layerW = SCREEN_WIDTH * 1.9;
+    const layerH = SCREEN_HEIGHT * 1.9;
+    const cols = Math.ceil(layerW / TILE_W);
+    const rows = Math.ceil(layerH / TILE_H);
 
-    // Get short tracking ID
-    const shortId = documentId ? documentId.substring(0, 8) : '00000000';
-
-    // Get random position
-    const getRandomPosition = () => {
-        const maxX = SCREEN_WIDTH - WATERMARK_WIDTH - PADDING;
-        const maxY = SCREEN_HEIGHT - WATERMARK_HEIGHT - PADDING - 100; // Account for header/footer
-
-        return {
-            x: PADDING + Math.random() * maxX,
-            y: PADDING + 80 + Math.random() * maxY, // Start below header
-        };
-    };
-
-    // Get random rotation (-5 to 5 degrees)
-    const getRandomRotation = () => {
-        return (Math.random() - 0.5) * 10;
-    };
-
-    // Animate to new position
-    const animateToNewPosition = () => {
-        const newPos = getRandomPosition();
-        const newRotation = getRandomRotation();
-
-        Animated.parallel([
-            Animated.timing(positionX, {
-                toValue: newPos.x,
-                duration: 1500,
-                useNativeDriver: true,
-            }),
-            Animated.timing(positionY, {
-                toValue: newPos.y,
-                duration: 1500,
-                useNativeDriver: true,
-            }),
-            Animated.timing(rotation, {
-                toValue: newRotation,
-                duration: 1500,
-                useNativeDriver: true,
-            }),
-            // Subtle opacity pulse
-            Animated.sequence([
-                Animated.timing(opacity, {
-                    toValue: 0.12,
-                    duration: 750,
-                    useNativeDriver: true,
-                }),
-                Animated.timing(opacity, {
-                    toValue: 0.18,
-                    duration: 750,
-                    useNativeDriver: true,
-                }),
-            ]),
-        ]).start();
-    };
-
-    useEffect(() => {
-        const initialPos = getRandomPosition();
-        positionX.setValue(initialPos.x);
-        positionY.setValue(initialPos.y);
-
-        let timeoutId;
-        
-        // Initial delay offset to desynchronize the watermarks
-        const startTimeout = setTimeout(() => {
-            const scheduleNextMove = () => {
-                const delay = MIN_INTERVAL + Math.random() * (MAX_INTERVAL - MIN_INTERVAL);
-                timeoutId = setTimeout(() => {
-                    animateToNewPosition();
-                    scheduleNextMove();
-                }, delay);
-            };
-
-            animateToNewPosition();
-            scheduleNextMove();
-        }, delayOffset);
-
-        return () => {
-            clearTimeout(startTimeout);
-            if (timeoutId) clearTimeout(timeoutId);
-        };
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-    const rotateInterpolate = rotation.interpolate({
-        inputRange: [-10, 10],
-        outputRange: ['-10deg', '10deg'],
-    });
-
-    return (
-        <Animated.View
-            style={[
-                styles.container,
-                {
-                    transform: [
-                        { translateX: positionX },
-                        { translateY: positionY },
-                        { rotate: rotateInterpolate },
-                    ],
-                    opacity: opacity,
-                },
-            ]}
-            pointerEvents="none"
-        >
-            <Text style={styles.watermarkText} numberOfLines={1}>
-                {recipientEmail || 'recipient@email.com'} • {formatTime()} • TRK-{shortId}
-            </Text>
-        </Animated.View>
-    );
-});
-
-const FloatingWatermark = memo(function FloatingWatermark(props) {
-    // Render 4 floating watermarks with different initial delay offsets so they don't move in sync
-    return (
-        <>
-            <FloatingWatermarkItem {...props} delayOffset={0} />
-            <FloatingWatermarkItem {...props} delayOffset={1500} />
-            <FloatingWatermarkItem {...props} delayOffset={3000} />
-            <FloatingWatermarkItem {...props} delayOffset={4500} />
-        </>
-    );
-});
-
-// Static repeating background watermark (additional layer)
-export const WatermarkBackground = memo(function WatermarkBackground({ recipientEmail }) {
     const items = [];
-    const cols = 3;
-    const rows = 8;
-
-    for (let i = 0; i < rows; i++) {
-        for (let j = 0; j < cols; j++) {
+    for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+            const stagger = (r % 2) * (TILE_W / 2); // brick offset for a denser weave
             items.push(
-                <View
-                    key={`${i}-${j}`}
-                    style={[
-                        styles.bgWatermark,
-                        {
-                            left: `${(j / cols) * 100}%`,
-                            top: `${(i / rows) * 100}%`,
-                            transform: [{ rotate: '-30deg' }],
-                        },
-                    ]}
+                <Text
+                    key={`${r}-${c}`}
+                    numberOfLines={1}
+                    style={[styles.tileText, { width: TILE_W - 30, left: c * TILE_W + stagger, top: r * TILE_H }]}
                 >
-                    <Text style={styles.bgWatermarkText}>
-                        {recipientEmail || 'Protected'}
-                    </Text>
-                </View>
+                    {line}
+                </Text>
             );
         }
     }
 
     return (
-        <View style={styles.bgContainer} pointerEvents="none">
-            {items}
+        <View style={styles.tileWrap} pointerEvents="none">
+            <View
+                style={{
+                    position: 'absolute',
+                    width: layerW,
+                    height: layerH,
+                    left: (SCREEN_WIDTH - layerW) / 2,
+                    top: (SCREEN_HEIGHT - layerH) / 2,
+                    transform: [{ rotate: '-30deg' }],
+                }}
+            >
+                {items}
+            </View>
         </View>
     );
 });
 
+// ---------------------------------------------------------------------------
+// Single subtle drifting attribution line (liveness + timestamp)
+// ---------------------------------------------------------------------------
+const FloatingWatermark = memo(function FloatingWatermark({ recipientEmail, timestamp, documentId }) {
+    const translateY = useRef(new Animated.Value(0)).current;
+
+    const formatTime = () => {
+        const d = new Date(timestamp || Date.now());
+        return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    };
+
+    const trk = shortTrk(documentId);
+
+    useEffect(() => {
+        // Gentle continuous vertical drift so a screenshot always differs slightly.
+        const loop = Animated.loop(
+            Animated.sequence([
+                Animated.timing(translateY, { toValue: 1, duration: 6000, useNativeDriver: true }),
+                Animated.timing(translateY, { toValue: 0, duration: 6000, useNativeDriver: true }),
+            ])
+        );
+        loop.start();
+        return () => loop.stop();
+    }, [translateY]);
+
+    const y = translateY.interpolate({
+        inputRange: [0, 1],
+        outputRange: [SCREEN_HEIGHT * 0.42, SCREEN_HEIGHT * 0.58],
+    });
+
+    return (
+        <Animated.View style={[styles.floatWrap, { transform: [{ translateY: y }] }]} pointerEvents="none">
+            <View style={styles.floatPill}>
+                <Text style={styles.floatText} numberOfLines={1}>
+                    {(recipientEmail || 'recipient@email.com')} · {formatTime()}{trk ? ` · TRK-${trk}` : ''}
+                </Text>
+            </View>
+        </Animated.View>
+    );
+});
+
 const styles = StyleSheet.create({
-    container: {
-        position: 'absolute',
-        zIndex: 9999,
-        padding: 8,
-        backgroundColor: 'rgba(0,0,0,0.3)',
-        borderRadius: 4,
+    tileWrap: {
+        ...StyleSheet.absoluteFillObject,
+        overflow: 'hidden',
+        zIndex: 50,
     },
-    watermarkText: {
-        color: 'rgba(255,255,255,0.9)',
-        fontSize: 11,
-        fontWeight: '500',
-        letterSpacing: 0.5,
-        textShadowColor: 'rgba(0,0,0,0.5)',
-        textShadowOffset: { width: 1, height: 1 },
-        textShadowRadius: 2,
-    },
-    bgContainer: {
+    tileText: {
         position: 'absolute',
-        top: 0,
+        color: 'rgba(255,255,255,0.09)',
+        fontSize: 13,
+        fontWeight: '600',
+        letterSpacing: 0.4,
+        textAlign: 'center',
+    },
+    floatWrap: {
+        position: 'absolute',
         left: 0,
         right: 0,
-        bottom: 0,
-        overflow: 'hidden',
-        opacity: 0.03,
+        alignItems: 'center',
+        zIndex: 60,
     },
-    bgWatermark: {
-        position: 'absolute',
+    floatPill: {
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 6,
+        backgroundColor: 'rgba(0,0,0,0.22)',
+        transform: [{ rotate: '-30deg' }],
     },
-    bgWatermarkText: {
-        color: 'white',
-        fontSize: 14,
+    floatText: {
+        color: 'rgba(255,255,255,0.28)',
+        fontSize: 12,
         fontWeight: '600',
+        letterSpacing: 0.4,
     },
 });
 

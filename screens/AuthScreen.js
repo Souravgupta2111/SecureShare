@@ -5,30 +5,34 @@
  * and registration functionality.
  */
 
-import React, { useState, useCallback } from 'react';
+import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useCallback, useState } from 'react';
 import {
-    View,
-    Text,
-    StyleSheet,
-    TextInput,
-    Pressable,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
     ActivityIndicator,
     Alert,
     Image,
+    KeyboardAvoidingView,
+    Linking,
+    Platform,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    View
 } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../context/AuthContext';
 import theme from '../theme';
 
+const PRIVACY_URL = 'https://souravgupta2111.github.io/SecureShare/privacy-policy.html';
+const TERMS_URL = 'https://souravgupta2111.github.io/SecureShare/terms.html';
+
 const AuthScreen = () => {
     const insets = useSafeAreaInsets();
-    const { signIn, signUp, loading } = useAuth();
+    const { signIn, signUp, resetPassword, loading } = useAuth();
 
     const [mode, setMode] = useState('login'); // 'login' | 'register'
     const [email, setEmail] = useState('');
@@ -99,6 +103,21 @@ const AuthScreen = () => {
         setErrors({});
     };
 
+    const handleForgotPassword = async () => {
+        if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            Alert.alert('Enter your email', 'Type your account email in the field above, then tap Forgot Password.');
+            return;
+        }
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        const { success, error } = await resetPassword(email.trim().toLowerCase());
+        Alert.alert(
+            success ? 'Check Your Email' : 'Error',
+            success
+                ? 'If an account exists for this email, a password reset link has been sent. Open it on this device to set a new password.'
+                : (error || 'Could not send the reset email. Please try again.')
+        );
+    };
+
     return (
         <KeyboardAvoidingView
             style={styles.container}
@@ -111,11 +130,12 @@ const AuthScreen = () => {
                 ]}
                 keyboardShouldPersistTaps="handled"
             >
+                <View style={styles.centerBlock}>
                 {/* Header */}
                 <View style={styles.header}>
                     <View style={styles.logoContainer}>
                         <Image
-                            source={require('../assets/logo.png')}
+                            source={require('../assets/images/icon.png')}
                             style={styles.logoImage}
                             resizeMode="contain"
                         />
@@ -181,6 +201,13 @@ const AuthScreen = () => {
                     </View>
                     {errors.password && <Text style={styles.errorText}>{errors.password}</Text>}
 
+                    {/* Forgot Password (login only) */}
+                    {mode === 'login' && (
+                        <Pressable onPress={handleForgotPassword} style={styles.forgotWrap} hitSlop={8}>
+                            <Text style={styles.forgotText}>Forgot Password?</Text>
+                        </Pressable>
+                    )}
+
                     {/* Submit Button */}
                     <Pressable
                         style={({ pressed }) => [
@@ -219,10 +246,19 @@ const AuthScreen = () => {
                     </View>
                 </View>
 
+                </View>
+
                 {/* Footer */}
                 <View style={styles.footer}>
                     <Text style={styles.footerText}>
-                        By continuing, you agree to our Terms of Service and Privacy Policy
+                        By continuing, you agree to our{' '}
+                        <Text style={styles.footerLink} onPress={() => Linking.openURL(TERMS_URL)}>
+                            Terms of Service
+                        </Text>
+                        {' '}and{' '}
+                        <Text style={styles.footerLink} onPress={() => Linking.openURL(PRIVACY_URL)}>
+                            Privacy Policy
+                        </Text>.
                     </Text>
                 </View>
             </ScrollView>
@@ -239,25 +275,35 @@ const styles = StyleSheet.create({
         flexGrow: 1,
         paddingHorizontal: 24,
     },
+    centerBlock: {
+        flex: 1,
+        width: '100%',
+        justifyContent: 'center',
+    },
     header: {
         alignItems: 'center',
         marginBottom: 40,
     },
     logoContainer: {
-        width: 100,
-        height: 100,
+        width: 92,
+        height: 92,
+        borderRadius: 22,
+        overflow: 'hidden',
         alignItems: 'center',
         justifyContent: 'center',
         marginBottom: 20,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.08)',
     },
     logoImage: {
         width: '100%',
         height: '100%',
     },
     title: {
-        fontSize: 28,
+        fontSize: 30,
         fontWeight: theme.font.weight.bold,
         color: 'white',
+        letterSpacing: 0.3,
         marginBottom: 8,
     },
     subtitle: {
@@ -266,7 +312,7 @@ const styles = StyleSheet.create({
         textAlign: 'center',
     },
     form: {
-        flex: 1,
+        width: '100%',
     },
     inputContainer: {
         flexDirection: 'row',
@@ -295,6 +341,16 @@ const styles = StyleSheet.create({
         fontSize: 12,
         marginBottom: 8,
         marginLeft: 4,
+    },
+    forgotWrap: {
+        alignSelf: 'flex-end',
+        marginTop: 4,
+        marginBottom: 4,
+    },
+    forgotText: {
+        color: theme.colors.accent.blue,
+        fontSize: 13,
+        fontWeight: theme.font.weight.semibold,
     },
     submitButton: {
         marginTop: 16,
@@ -327,7 +383,7 @@ const styles = StyleSheet.create({
     },
     footer: {
         alignItems: 'center',
-        marginTop: 40,
+        paddingTop: 16,
         paddingHorizontal: 20,
     },
     footerText: {
@@ -335,6 +391,11 @@ const styles = StyleSheet.create({
         fontSize: 12,
         textAlign: 'center',
         lineHeight: 18,
+    },
+    footerLink: {
+        color: theme.colors.accent.blue,
+        fontSize: 12,
+        fontWeight: theme.font.weight.semibold,
     },
 });
 

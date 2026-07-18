@@ -6,13 +6,14 @@
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "secureshare",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "dark",
     "jsEngine": "hermes",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.secureshare.app",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSPhotoLibraryUsageDescription": "SecureShare needs access to your photos to share and watermark images securely.",
         "NSCameraUsageDescription": "SecureShare needs camera access to capture documents for secure sharing.",
         "NSFaceIDUsageDescription": "Use Face ID to unlock SecureShare and protect your documents."
@@ -35,7 +36,8 @@
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.VIBRATE",
         "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.RECORD_AUDIO"
       ],
       "googleServicesFile": "./google-services.json"
     },
@@ -54,12 +56,12 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#0e1117",
           "dark": {
-            "image": "./assets/images/splash-icon.png",
+            "image": "./assets/images/icon.png",
             "backgroundColor": "#0e1117"
           }
         }
@@ -79,23 +81,33 @@
         }
       ],
       "expo-local-authentication",
-      "./plugins/withSecurityModules"
+      "./plugins/withWatermarkSecret",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "15.1"
+          }
+        }
+      ],
+      "./plugins/withMinIosDeploymentTarget"
     ],
     "experiments": {
       "reactCompiler": true
     },
     "extra": {
-      "privacyPolicy": "https://secureshare.app/privacy",
+      "privacyPolicy": "https://souravgupta2111.github.io/SecureShare/privacy-policy.html",
       "supportEmail": "support@secureshare.app",
       "eas": {
-        "projectId": "YOUR_EAS_PROJECT_ID"
+        "projectId": "caa21b2b-c1bc-47d8-857f-9d75215146a1"
       }
     },
     "updates": {
-      "url": "https://u.expo.dev/YOUR_EAS_PROJECT_ID"
+      "url": "https://u.expo.dev/caa21b2b-c1bc-47d8-857f-9d75215146a1"
     },
     "runtimeVersion": {
       "policy": "appVersion"
-    }
+    },
+    "owner": "souravgg21"
   }
 }

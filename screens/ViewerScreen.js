@@ -9,20 +9,41 @@
  * - Security event logging
  */
 
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
+import * as Clipboard from 'expo-clipboard';
+import Constants from 'expo-constants';
+import * as Haptics from 'expo-haptics';
+import { usePreventScreenCapture } from 'expo-screen-capture';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    View,
-    Text,
-    StyleSheet,
-    Image,
-    Pressable,
-    StatusBar,
     ActivityIndicator,
-    Platform,
     Alert,
     AppState,
-    NativeModules
+    Image,
+    Platform,
+    Pressable,
+    StatusBar,
+    StyleSheet,
+    Text,
+    View
 } from 'react-native';
+import Pdf from 'react-native-pdf';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ErrorBoundary from '../components/ErrorBoundary';
+import FloatingWatermark, { WatermarkBackground } from '../components/FloatingWatermark';
+import { useAuth } from '../context/AuthContext';
+import { blockSender, downloadSecureBlob, endViewSession, getDocumentKey, getProfile, logScreenshotAttempt, notifyDocumentOwner, reportContent, startViewSession, updateViewDuration, validateAccessGrant } from '../lib/supabase';
+import { disableSecureMode, startScreenshotDetection, stopScreenshotDetection } from '../native/SecurityBridge';
+import theme from '../theme';
+import { queueSecurityEvent } from '../utils/analyticsQueue';
+import { decryptData } from '../utils/crypto';
+import { decryptDocumentKey } from '../utils/CryptoService';
+import { generateDeviceHash } from '../utils/deviceSecurity';
+import * as heartbeat from '../utils/heartbeat';
+import * as security from '../utils/security';
+import * as storage from '../utils/storage';
+import { extractDocumentWatermark, getCleanImageBase64, verifyWatermarkSignature } from '../utils/watermark';
 
 // SecureWatermark is an Expo Module (not a classic NativeModule), so we must use requireNativeModule
 let SecureWatermark = null;
@@ -32,27 +53,6 @@ try {
 } catch (e) {
     console.warn('[Viewer] SecureWatermark native module not available:', e.message);
 }
-import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import * as Haptics from 'expo-haptics';
-import * as Clipboard from 'expo-clipboard';
-import { BlurView } from 'expo-blur';
-import ErrorBoundary from '../components/ErrorBoundary';
-import theme from '../theme';
-import * as heartbeat from '../utils/heartbeat';
-import * as security from '../utils/security';
-import * as storage from '../utils/storage';
-import { getCleanImageBase64, extractImageWatermarkAsync, extractDocumentWatermark, verifyWatermarkSignature } from '../utils/watermark';
-import FloatingWatermark, { WatermarkBackground } from '../components/FloatingWatermark';
-import { useAuth } from '../context/AuthContext';
-import { logAnalyticsEvent, logSecurityEvent, downloadSecureBlob, getDocumentKey, validateAccessGrant } from '../lib/supabase';
-import { queueAnalyticsEvent, queueSecurityEvent } from '../utils/analyticsQueue';
-import { decryptData } from '../utils/crypto';
-import { decryptDocumentKey } from '../utils/CryptoService';
-import { enableSecureMode, disableSecureMode, startScreenshotDetection, stopScreenshotDetection } from '../native/SecurityBridge';
-import { generateDeviceHash } from '../utils/deviceSecurity';
-import { usePreventScreenCapture } from 'expo-screen-capture';
-import Pdf from 'react-native-pdf';
 
 // Security: Clear clipboard to prevent data exfiltration
 const clearClipboard = async () => {
@@ -83,39 +83,51 @@ const ViewerScreen = ({ route, navigation }) => {
     const recipientEmail = routeEmail || user?.email || 'unknown';
     const docUuid = documentId || docMetadata?.uuid;
 
-    // Log view start
+    // Tracks whether a document_analytics session row was successfully created,
+    // so we only try to close/update a session that actually exists.
+    const sessionActiveRef = useRef(false);
+
+    // Log view start — creates the document_analytics session row that the
+    // owner's DocumentAnalyticsScreen reads (opens, view time, screenshots).
     const logViewStart = useCallback(async () => {
         try {
-            await queueAnalyticsEvent({
-                document_id: docUuid,
-                access_token_id: accessTokenId,
-                recipient_email: recipientEmail,
-                event_type: 'view_start',
-                device_hash: Platform.OS,
+            const deviceHash = await generateDeviceHash();
+            const { error } = await startViewSession({
+                documentId: docUuid,
+                viewerEmail: recipientEmail,
+                sessionId,
+                deviceHash,
                 platform: Platform.OS,
-                metadata: { session_id: sessionId }
+                appVersion: Constants?.expoConfig?.version || '1.0.0',
+                accessGrantId: accessTokenId || null,
+                totalPages: 1,
             });
+            if (error) {
+                console.warn('[Viewer] startViewSession failed:', error.message);
+            } else {
+                sessionActiveRef.current = true;
+            }
+
+            // Real-time alert to the document owner (best-effort). Skip when the
+            // viewer IS the owner; the server double-checks this too.
+            const isOwnDoc = docMetadata?.owner_id && user?.id && docMetadata.owner_id === user.id;
+            if (!isOwnDoc) {
+                notifyDocumentOwner(docUuid, 'view_start');
+            }
         } catch (e) {
             console.error('Failed to log view start:', e);
         }
-    }, [docUuid, accessTokenId, recipientEmail, sessionId]);
+    }, [docUuid, accessTokenId, recipientEmail, sessionId, docMetadata, user]);
 
-    // Log view end
+    // Log view end — closes the session and records the total duration.
     const logViewEnd = useCallback(async (duration) => {
+        if (!sessionActiveRef.current) return;
         try {
-            await queueAnalyticsEvent({
-                document_id: docUuid,
-                access_token_id: accessTokenId,
-                recipient_email: recipientEmail,
-                event_type: 'view_end',
-                session_duration: duration,
-                platform: Platform.OS,
-                metadata: { session_id: sessionId }
-            });
+            await endViewSession(sessionId, { duration, pagesViewed: 1 });
         } catch (e) {
             console.error('Failed to log view end:', e);
         }
-    }, [docUuid, accessTokenId, recipientEmail, sessionId]);
+    }, [sessionId]);
 
     // Log security event
     const logSecurityIncident = useCallback(async (eventType) => {
@@ -133,14 +145,20 @@ const ViewerScreen = ({ route, navigation }) => {
         } catch (e) {
             console.error('Failed to log security event:', e);
         }
+
+        // Push a real-time alert to the owner for genuine leak threats only.
+        if (eventType === 'screenshot' || eventType === 'screen_recording') {
+            notifyDocumentOwner(docUuid, eventType);
+        }
     }, [docUuid, accessTokenId, recipientEmail]);
 
     useEffect(() => {
         const initViewer = async () => {
             try {
                 // DRM: usePreventScreenCapture() is already active via the hook at component level.
-                // Additional check: Hardware Mirroring (scrcpy/Miracast)
-                if (Platform.OS === 'android' && SecureWatermark && SecureWatermark.isScreenBeingMirrored) {
+                // Additional check: Hardware Mirroring (scrcpy/Miracast on Android, AirPlay/external
+                // display on iOS). Implemented natively on both platforms now.
+                if (SecureWatermark && SecureWatermark.isScreenBeingMirrored) {
                     const isMirroring = await SecureWatermark.isScreenBeingMirrored();
                     if (isMirroring) {
                         Alert.alert('Screen Mirroring Detected', 'Content hidden for security.');
@@ -155,6 +173,8 @@ const ViewerScreen = ({ route, navigation }) => {
                         // Screenshot detected - blur immediately, then log and alert
                         async () => {
                             setIsBlurred(true);
+                            // Increment the per-session screenshot counter AND log a security event.
+                            logScreenshotAttempt(sessionId).catch(() => {});
                             await logSecurityIncident('screenshot');
                             setTimeout(() => {
                                 setIsBlurred(false);
@@ -242,18 +262,38 @@ const ViewerScreen = ({ route, navigation }) => {
                             
                             console.log('[Viewer] cleanBase64 length:', cleanBase64?.length, 'first80:', cleanBase64?.substring(0, 80));
                             
-                            if (SecureWatermark) {
-                                // Step 3: Pass clean base64 to Kotlin for Spread Spectrum embedding
+                            // FAIL CLOSED: images MUST carry a forensic watermark. If the native
+                            // watermark module is unavailable or embedding fails, refuse to display
+                            // the image rather than silently leaking an untraceable copy.
+                            if (!SecureWatermark) {
+                                console.warn('[Viewer] SecureWatermark unavailable — blocking image view (fail closed).');
+                                await logSecurityIncident('watermark_unavailable');
+                                setIsLoading(false);
+                                Alert.alert(
+                                    'Cannot Display Image',
+                                    'Forensic protection is unavailable on this device, so this image cannot be shown. Please update to an official build of SecureShare.',
+                                    [{ text: 'OK', onPress: () => navigation.goBack() }]
+                                );
+                                return;
+                            }
+                            try {
+                                // Pass clean base64 to the native module for Spread Spectrum embedding
                                 decryptedBase64 = await SecureWatermark.embedWatermark(
                                     cleanBase64,
                                     recipientEmail,
                                     doc.id
                                 );
-                                console.log('[Viewer] Spread Spectrum watermark embedded via Kotlin');
-                            } else {
-                                // Fallback: no watermark, just display
-                                console.warn('[Viewer] SecureWatermark unavailable, displaying without forensic watermark');
-                                decryptedBase64 = cleanBase64;
+                                console.log('[Viewer] Spread Spectrum watermark embedded');
+                            } catch (wmErr) {
+                                console.error('[Viewer] Watermark embedding failed — blocking image view:', wmErr?.message);
+                                await logSecurityIncident('watermark_failed');
+                                setIsLoading(false);
+                                Alert.alert(
+                                    'Cannot Display Image',
+                                    'Forensic watermarking failed on this device, so this image cannot be shown. Please try again or update the app.',
+                                    [{ text: 'OK', onPress: () => navigation.goBack() }]
+                                );
+                                return;
                             }
                         } else {
                             // Legacy/PDF decryption in JS
@@ -318,6 +358,16 @@ const ViewerScreen = ({ route, navigation }) => {
             setViewSeconds(val => val + 1);
         }, 1000);
 
+        // Persist view duration periodically so it survives an app kill / crash
+        // (endViewSession may never fire in those cases).
+        const viewStartMs = Date.now();
+        const durationTimer = setInterval(() => {
+            if (sessionActiveRef.current) {
+                const secs = Math.floor((Date.now() - viewStartMs) / 1000);
+                updateViewDuration(sessionId, secs).catch(() => {});
+            }
+        }, 15000);
+
         // Security: Clear clipboard on mount
         clearClipboard();
 
@@ -360,6 +410,7 @@ const ViewerScreen = ({ route, navigation }) => {
             heartbeat.stopTracking(docUuid);
             security.stopMonitoring();
             clearInterval(timer);
+            clearInterval(durationTimer);
             subscription.remove();
 
             // Log view end with duration (using ref to get final value)
@@ -381,6 +432,56 @@ const ViewerScreen = ({ route, navigation }) => {
         const m = Math.floor(s / 60);
         const sc = s % 60;
         return `${m}:${sc < 10 ? '0' + sc : sc}`;
+    };
+
+    // --- UGC safety: report objectionable content / block the sender ---
+    const submitReport = async () => {
+        const { error } = await reportContent({ documentId: docUuid, reason: 'objectionable_content' });
+        Alert.alert(
+            error ? 'Error' : 'Report Submitted',
+            error ? 'Could not submit your report. Please try again.'
+                  : 'Thank you. Our team will review this content within 24 hours.'
+        );
+    };
+
+    const confirmBlockSender = async () => {
+        try {
+            const ownerId = docMetadata?.owner_id;
+            let senderEmail = docMetadata?.owner_email || null;
+            if (!senderEmail && ownerId) {
+                const { data } = await getProfile(ownerId);
+                senderEmail = data?.email || null;
+            }
+            if (!senderEmail) {
+                Alert.alert('Error', 'Could not identify the sender.');
+                return;
+            }
+            const { error } = await blockSender(senderEmail);
+            if (error) {
+                Alert.alert('Error', 'Could not block this sender.');
+                return;
+            }
+            Alert.alert(
+                'Sender Blocked',
+                `You will no longer receive documents from ${senderEmail}.`,
+                [{ text: 'OK', onPress: () => navigation.goBack() }]
+            );
+        } catch (_e) {
+            Alert.alert('Error', 'Could not block this sender.');
+        }
+    };
+
+    const handleReportOrBlock = () => {
+        const isOwnDoc = docMetadata?.owner_id && user?.id && docMetadata.owner_id === user.id;
+        const options = [
+            { text: 'Report content', onPress: submitReport },
+        ];
+        // Only offer "block sender" when viewing someone else's shared document.
+        if (!isOwnDoc) {
+            options.push({ text: 'Block sender', style: 'destructive', onPress: confirmBlockSender });
+        }
+        options.push({ text: 'Cancel', style: 'cancel' });
+        Alert.alert('Report or Block', 'Report objectionable content or block this sender.', options);
     };
 
     const getSource = () => {
@@ -473,12 +574,13 @@ const ViewerScreen = ({ route, navigation }) => {
             </View>
 
             {/* Background Watermark Pattern */}
-            <WatermarkBackground recipientEmail={recipientEmail} />
+            <WatermarkBackground recipientEmail={recipientEmail} documentId={docUuid} />
 
             {/* Floating Visible Watermark */}
             <FloatingWatermark
                 recipientEmail={recipientEmail}
                 timestamp={Date.now()}
+                documentId={docUuid}
             />
 
             {/* Header Overlay */}
@@ -500,7 +602,16 @@ const ViewerScreen = ({ route, navigation }) => {
                         <Text style={styles.securedText}>Secured</Text>
                     </View>
                 </View>
-                <View style={{ width: 24 }} />
+                <Pressable
+                    onPress={handleReportOrBlock}
+                    hitSlop={10}
+                    style={styles.backBtn}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Report or block"
+                >
+                    <Ionicons name="flag-outline" size={22} color="white" />
+                </Pressable>
             </View>
 
             {/* Bottom Overlay */}

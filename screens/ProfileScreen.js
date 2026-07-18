@@ -5,33 +5,39 @@
  * storage usage, and comprehensive settings.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-    View,
-    Text,
-    StyleSheet,
-    ScrollView,
-    Pressable,
-    Switch,
-    Alert,
-    ActivityIndicator,
-} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import * as Haptics from 'expo-haptics';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useCallback, useEffect, useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    Linking,
+    Pressable,
+    ScrollView,
+    StyleSheet,
+    Switch,
+    Text,
+    View
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAuth } from '../context/AuthContext';
 import AnimatedHeader from '../components/AnimatedHeader';
+import { useAuth } from '../context/AuthContext';
 import theme from '../theme';
 
 import InputModal from '../components/InputModal';
 
 const SETTINGS_KEY = 'secureshare_user_settings';
 
+// Public legal + support endpoints (must be live for App Store review).
+const PRIVACY_URL = 'https://souravgupta2111.github.io/SecureShare/privacy-policy.html';
+const TERMS_URL = 'https://souravgupta2111.github.io/SecureShare/terms.html';
+const SUPPORT_EMAIL = 'support@secureshare.app';
+
 const ProfileScreen = ({ navigation }) => {
     const insets = useSafeAreaInsets();
-    const { user, profile, signOut, updateProfile } = useAuth(); // Assuming updateProfile exists in context
+    const { user, profile, signOut, deleteAccount, updateProfile } = useAuth(); // Assuming updateProfile exists in context
 
     const [settings, setSettings] = useState({
         biometricLock: false,
@@ -44,6 +50,7 @@ const ProfileScreen = ({ navigation }) => {
     });
     const [storageUsed, setStorageUsed] = useState(0);
     const [signingOut, setSigningOut] = useState(false);
+    const [deletingAccount, setDeletingAccount] = useState(false);
     const [editModalVisible, setEditModalVisible] = useState(false);
 
     useEffect(() => {
@@ -117,6 +124,60 @@ const ProfileScreen = ({ navigation }) => {
                         setSigningOut(true);
                         await signOut();
                         setSigningOut(false);
+                    },
+                },
+            ]
+        );
+    };
+
+    const openURL = (url) => {
+        Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open the link.'));
+    };
+
+    const handleReportProblem = () => {
+        const subject = encodeURIComponent('SecureShare — Report a problem');
+        const body = encodeURIComponent(
+            `\n\n---\nAccount: ${user?.email || 'unknown'}\nApp version: 2.0.0`
+        );
+        openURL(`mailto:${SUPPORT_EMAIL}?subject=${subject}&body=${body}`);
+    };
+
+    // App Store Guideline 5.1.1(v): account deletion must be initiable in-app.
+    // Two-step confirmation so it's a deliberate, non-accidental action.
+    const handleDeleteAccount = () => {
+        Alert.alert(
+            'Delete Account',
+            'This permanently deletes your account, your documents, encryption keys, and every share. This cannot be undone.',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Continue',
+                    style: 'destructive',
+                    onPress: () => {
+                        Alert.alert(
+                            'Are you absolutely sure?',
+                            'All of your data will be erased immediately and permanently.',
+                            [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                    text: 'Delete Forever',
+                                    style: 'destructive',
+                                    onPress: async () => {
+                                        setDeletingAccount(true);
+                                        const { success, error } = await deleteAccount();
+                                        setDeletingAccount(false);
+                                        if (!success) {
+                                            Alert.alert(
+                                                'Deletion Failed',
+                                                error || 'Please try again. If this keeps happening, contact support.'
+                                            );
+                                        }
+                                        // On success the auth state clears and the app
+                                        // returns to the sign-in flow automatically.
+                                    },
+                                },
+                            ]
+                        );
                     },
                 },
             ]
@@ -246,13 +307,18 @@ const ProfileScreen = ({ navigation }) => {
                         <Text style={styles.aboutValue}>2.0.0</Text>
                     </View>
                     <View style={styles.divider} />
-                    <Pressable style={styles.linkRow}>
+                    <Pressable style={styles.linkRow} onPress={() => openURL(PRIVACY_URL)}>
                         <Text style={styles.linkText}>Privacy Policy</Text>
                         <Ionicons name="chevron-forward" size={18} color={theme.colors.text.muted} />
                     </Pressable>
                     <View style={styles.divider} />
-                    <Pressable style={styles.linkRow}>
+                    <Pressable style={styles.linkRow} onPress={() => openURL(TERMS_URL)}>
                         <Text style={styles.linkText}>Terms of Service</Text>
+                        <Ionicons name="chevron-forward" size={18} color={theme.colors.text.muted} />
+                    </Pressable>
+                    <View style={styles.divider} />
+                    <Pressable style={styles.linkRow} onPress={handleReportProblem}>
+                        <Text style={styles.linkText}>Report a Problem</Text>
                         <Ionicons name="chevron-forward" size={18} color={theme.colors.text.muted} />
                     </Pressable>
                 </View>
@@ -272,6 +338,30 @@ const ProfileScreen = ({ navigation }) => {
                         </>
                     )}
                 </Pressable>
+
+                {/* Danger zone: permanent account deletion (App Store 5.1.1(v)) */}
+                <Text style={styles.sectionTitle}>DANGER ZONE</Text>
+                <View style={styles.card}>
+                    <Pressable
+                        style={styles.deleteRow}
+                        onPress={handleDeleteAccount}
+                        disabled={deletingAccount}
+                    >
+                        {deletingAccount ? (
+                            <ActivityIndicator color={theme.colors.status.danger} />
+                        ) : (
+                            <>
+                                <Ionicons name="trash-outline" size={20} color={theme.colors.status.danger} />
+                                <View style={styles.deleteTextWrap}>
+                                    <Text style={styles.deleteTitle}>Delete Account</Text>
+                                    <Text style={styles.deleteSubtitle}>
+                                        Permanently erase your account and all data
+                                    </Text>
+                                </View>
+                            </>
+                        )}
+                    </Pressable>
+                </View>
             </ScrollView>
 
             <InputModal
@@ -464,6 +554,25 @@ const styles = StyleSheet.create({
         color: theme.colors.status.danger,
         fontSize: 16,
         fontWeight: '500',
+    },
+    deleteRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 8,
+    },
+    deleteTextWrap: {
+        flex: 1,
+        marginLeft: 12,
+    },
+    deleteTitle: {
+        color: theme.colors.status.danger,
+        fontSize: 15,
+        fontWeight: '600',
+        marginBottom: 2,
+    },
+    deleteSubtitle: {
+        color: theme.colors.text.muted,
+        fontSize: 12,
     },
 });
 

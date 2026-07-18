@@ -2,11 +2,10 @@
 
 [![React Native](https://img.shields.io/badge/React_Native-0.81.5-blue.svg)](https://reactnative.dev/)
 [![Expo](https://img.shields.io/badge/Expo-SDK_54-black.svg)](https://expo.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-Strict-blue.svg)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/Tests-97%2F102_passing-green.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-102%2F102_passing-green.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **zero-trust, secure document sharing mobile application** built with React Native and Expo. SecureShare implements military-grade encryption, forensic watermarking, and comprehensive security features to protect sensitive documents from unauthorized access and leaks.
+A **zero-trust, secure document sharing mobile application** built with React Native and Expo. SecureShare uses client-side AES-256 encryption, RSA key exchange, forensic watermarking, and layered device protections to guard sensitive documents against unauthorized access and leaks.
 
 ![SecureShare Demo](docs/demo-screenshot.png)
 
@@ -124,7 +123,7 @@ npm run lint
 npx tsc --noEmit
 ```
 
-**Test Coverage:** 97/102 tests passing (95% pass rate)
+**Test Coverage:** 102/102 tests passing across 9 suites
 
 ## 📁 Project Structure
 
@@ -147,7 +146,7 @@ SecureShare/
 ├── lib/                 # API layer
 │   └── supabase.js            # Database operations
 ├── supabase/            # Backend
-│   ├── migrations/            # 25+ SQL migrations
+│   ├── migrations/            # SQL migrations (schema + policies)
 │   └── functions/             # Edge functions
 ├── __tests__/           # Test suite
 │   └── 9 test files

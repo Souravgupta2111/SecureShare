@@ -5,10 +5,9 @@
  * Persists user preference in AsyncStorage.
  */
 
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import { useColorScheme } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { darkTheme, lightTheme } from '../theme';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { darkTheme } from '../theme';
 
 const THEME_STORAGE_KEY = 'secureshare_theme_preference';
 
@@ -22,8 +21,7 @@ const ThemeContext = createContext({
 export const useTheme = () => useContext(ThemeContext);
 
 export const ThemeProvider = ({ children }) => {
-    const systemColorScheme = useColorScheme();
-    const [themeMode, setThemeMode] = useState('system'); // 'light', 'dark', 'system'
+    const [themeMode, setThemeMode] = useState('dark'); // locked to dark
     const [isLoaded, setIsLoaded] = useState(false);
 
     // Load saved preference on mount
@@ -43,18 +41,9 @@ export const ThemeProvider = ({ children }) => {
         loadThemePreference();
     }, []);
 
-    // Calculate actual dark state
-    const isDark = useMemo(() => {
-        if (themeMode === 'system') {
-            return systemColorScheme === 'dark';
-        }
-        return themeMode === 'dark';
-    }, [themeMode, systemColorScheme]);
-
-    // Get theme object
-    const theme = useMemo(() => {
-        return isDark ? darkTheme : lightTheme;
-    }, [isDark]);
+    // App is LOCKED to dark mode.
+    const isDark = true;
+    const theme = darkTheme;
 
     // Toggle between light and dark
     const toggleTheme = async () => {

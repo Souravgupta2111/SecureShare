@@ -7,17 +7,17 @@
  * - Haptic feedback
  */
 
-import React, { memo, useRef, useState, useCallback, useEffect } from 'react';
-import {
-    View,
-    StyleSheet,
-    Pressable,
-    Animated,
-    Text,
-} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
+import { memo, useEffect, useRef } from 'react';
+import {
+    Animated,
+    Pressable,
+    StyleSheet,
+    Text,
+    View,
+} from 'react-native';
 import theme from '../theme';
 
 const FAB_SIZE = 56;

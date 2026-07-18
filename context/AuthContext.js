@@ -5,10 +5,12 @@
  * Provides user info, loading state, and auth methods.
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { supabase, getProfile, signIn, signUp, signOut, updateProfile } from '../lib/supabase';
 import * as SecureStore from 'expo-secure-store';
-import { generateKeyPair, exportPublicKey, exportPrivateKey, importPrivateKey } from '../utils/crypto';
+import { createContext, useContext, useEffect, useState } from 'react';
+import { Alert, Linking } from 'react-native';
+import { deleteAccount, getProfile, redeemInvite, resetPassword, saveDocumentKey, signIn, signOut, signUp, supabase, updatePassword, updateProfile } from '../lib/supabase';
+import { setAnalyticsConsent as syncQueueAnalyticsConsent } from '../utils/analyticsQueue';
+import { encryptKey, exportPrivateKey, exportPublicKey, generateKeyPair, importPrivateKey, importPublicKey, unwrapKeyWithSecret } from '../utils/crypto';
 
 // Key for SecureStore
 const PRIVATE_KEY_STORAGE_KEY = 'secureshare_private_key';
@@ -36,6 +38,14 @@ export const AuthProvider = ({ children }) => {
     // Consent state (default OFF for privacy)
     const [analyticsConsent, setAnalyticsConsent] = useState(false);
     const [errorReportingConsent, setErrorReportingConsent] = useState(false);
+
+    // Password-recovery state — true while the user arrived via a reset link and
+    // must choose a new password before continuing.
+    const [passwordRecovery, setPasswordRecovery] = useState(false);
+
+    // Pending invite captured from a secureshare://invite deep link, redeemed
+    // once the user is authenticated (they may need to sign up first).
+    const [pendingInvite, setPendingInvite] = useState(null);
 
     // Helper: Ensure Zero-Trust Keys Exist
     const ensureKeysExist = async (userId) => {
@@ -145,6 +155,9 @@ export const AuthProvider = ({ children }) => {
                         // Load consent preferences from profile
                         setAnalyticsConsent(profileData.analytics_consent || false);
                         setErrorReportingConsent(profileData.error_reporting_consent || false);
+                        // Keep the analytics queue's consent flag in sync with the profile,
+                        // otherwise queued analytics events are silently dropped.
+                        syncQueueAnalyticsConsent(profileData.analytics_consent || false);
                     } else {
                         // Profile missing? Create or fetch failed.
                     }
@@ -187,6 +200,12 @@ export const AuthProvider = ({ children }) => {
                 if (newSession?.user) {
                     const { data: profileData } = await getProfile(newSession.user.id);
                     setProfile(profileData);
+                    // Silently ensure encryption keys exist on fresh sign-in (covers
+                    // auto-confirm signup and email-confirmation deep links). Idempotent
+                    // and fast (~250ms), runs in the background — no blocking screen.
+                    if (event === 'SIGNED_IN') {
+                        ensureKeysExist(newSession.user.id).catch(() => {});
+                    }
                 } else {
                     setProfile(null);
                 }
@@ -224,11 +243,11 @@ export const AuthProvider = ({ children }) => {
             if (error) throw error;
 
             if (data.user) {
-                // Check if keys exist, if not set flag to show KeyGenerationScreen
-                const hasKeys = await checkKeysExist(data.user.id);
-                if (!hasKeys) {
-                    console.log('[Auth] New user - will show key generation screen');
-                    setNeedsKeyGeneration(true);
+                // Generate keys SILENTLY in the background — no blocking screen.
+                // If signup returns a session (email confirmation disabled), do it now;
+                // otherwise keys are generated on first sign-in via ensureKeysExist.
+                if (data.session) {
+                    ensureKeysExist(data.user.id).catch((e) => console.warn('[Auth] bg key gen failed:', e.message));
                 }
             }
 
@@ -260,6 +279,177 @@ export const AuthProvider = ({ children }) => {
         }
     };
 
+    /**
+     * Permanently delete the user's account (App Store Guideline 5.1.1(v)).
+     * Calls the delete-account Edge Function, then wipes all local secrets and
+     * clears the session so the app returns to the auth flow.
+     * @returns {Promise<{success: boolean, error?: string}>}
+     */
+    const handleDeleteAccount = async () => {
+        setLoading(true);
+        try {
+            const { error } = await deleteAccount();
+            if (error) {
+                setLoading(false);
+                return { success: false, error: error.message || 'Failed to delete account' };
+            }
+
+            // Wipe local private keys (chunked + legacy) so nothing survives on-device.
+            await SecureStore.deleteItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_0`);
+            await SecureStore.deleteItemAsync(`${PRIVATE_KEY_STORAGE_KEY}_1`);
+            await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
+
+            // End the server session (best-effort — the user is already deleted).
+            try { await signOut(); } catch (_e) { /* already gone */ }
+
+            return { success: true };
+        } catch (error) {
+            return { success: false, error: error.message };
+        } finally {
+            // Always clear local session state so the app leaves the authed area.
+            setUser(null);
+            setSession(null);
+            setProfile(null);
+            setLoading(false);
+        }
+    };
+
+    /** Send a password-reset email to the given address. */
+    const handleResetPassword = async (email) => {
+        const { error } = await resetPassword(email);
+        if (error) return { success: false, error: error.message };
+        return { success: true };
+    };
+
+    // --- PASSWORD RECOVERY via deep link (secureshare://reset-password) ---
+
+    // Extract auth params from either the query (?a=b) or fragment (#a=b) of a URL.
+    // Supabase's implicit recovery link returns tokens in the fragment.
+    const parseAuthParams = (url) => {
+        const out = {};
+        const hashIndex = url.indexOf('#');
+        const qIndex = url.indexOf('?');
+        const segments = [];
+        if (qIndex !== -1) segments.push(url.substring(qIndex + 1, hashIndex === -1 ? undefined : hashIndex));
+        if (hashIndex !== -1) segments.push(url.substring(hashIndex + 1));
+        for (const seg of segments) {
+            for (const kv of seg.split('&')) {
+                const [k, v] = kv.split('=');
+                if (k) out[decodeURIComponent(k)] = decodeURIComponent(v || '');
+            }
+        }
+        return out;
+    };
+
+    const handleDeepLink = async (url) => {
+        if (!url) return;
+
+        // Invite link: secureshare://invite?token=..#k=..
+        // Store it; it's redeemed once the user is authenticated (see effect below).
+        if (url.indexOf('invite') !== -1) {
+            const p = parseAuthParams(url);
+            if (p.token && p.k) setPendingInvite({ token: p.token, secret: p.k });
+            return;
+        }
+
+        if (url.indexOf('reset-password') === -1) return;
+        try {
+            const params = parseAuthParams(url);
+            if (params.error || params.error_description) {
+                setPasswordRecovery(false);
+                Alert.alert(
+                    'Link Expired',
+                    params.error_description || 'This password reset link is invalid or has expired. Please request a new one.'
+                );
+                return;
+            }
+            if (params.access_token && params.refresh_token) {
+                // Implicit flow: establish the recovery session from the tokens.
+                const { error } = await supabase.auth.setSession({
+                    access_token: params.access_token,
+                    refresh_token: params.refresh_token,
+                });
+                if (error) throw error;
+                setPasswordRecovery(true);
+            } else if (params.code) {
+                // PKCE flow fallback.
+                const { error } = await supabase.auth.exchangeCodeForSession(params.code);
+                if (error) throw error;
+                setPasswordRecovery(true);
+            }
+        } catch (e) {
+            console.warn('[Auth] Reset-link handling failed:', e.message);
+            Alert.alert('Reset Failed', 'Could not open the password reset link. Please request a new one.');
+        }
+    };
+
+    // Listen for the reset-password deep link (cold start + while running).
+    useEffect(() => {
+        Linking.getInitialURL().then((url) => { if (url) handleDeepLink(url); });
+        const sub = Linking.addEventListener('url', ({ url }) => handleDeepLink(url));
+        return () => sub.remove();
+    }, []);
+
+    /**
+     * Complete the reset: set the new password on the (recovery-authenticated)
+     * user and persist it in Supabase, then leave recovery mode.
+     */
+    const completePasswordReset = async (newPassword) => {
+        const { error } = await updatePassword(newPassword);
+        if (error) return { success: false, error: error.message };
+        setPasswordRecovery(false);
+        return { success: true };
+    };
+
+    /** Abort recovery (e.g. user cancels) — clear the recovery session. */
+    const cancelPasswordRecovery = async () => {
+        setPasswordRecovery(false);
+        try { await signOut(); } catch (_e) { /* ignore */ }
+        setUser(null);
+        setSession(null);
+        setProfile(null);
+    };
+
+    /**
+     * Redeem an invite link: grant access via the server, unwrap the document key
+     * using the secret from the link, re-wrap it with this user's RSA key, and
+     * persist it. Afterwards the document appears in "Shared with Me".
+     */
+    const redeemInviteFlow = async (token, secret) => {
+        try {
+            const { data, error } = await redeemInvite(token);
+            if (error || !data) throw error || new Error('Invite invalid');
+
+            const docKeyHex = await unwrapKeyWithSecret(data.wkey, secret);
+
+            const uid = (await supabase.auth.getUser()).data.user?.id;
+            if (!uid) throw new Error('Not signed in');
+            await ensureKeysExist(uid);
+
+            const { data: prof } = await getProfile(uid);
+            if (!prof?.public_key) throw new Error('Missing public key');
+
+            const pub = await importPublicKey(prof.public_key);
+            const encKey = await encryptKey(docKeyHex, pub);
+            await saveDocumentKey(data.doc_id, encKey, uid);
+
+            setPendingInvite(null);
+            Alert.alert('Document Unlocked', 'The shared document is now in “Shared with Me”.');
+        } catch (e) {
+            console.warn('[Auth] Invite redeem failed:', e.message);
+            setPendingInvite(null);
+            Alert.alert('Could Not Open Link', 'This secure link is invalid or has expired.');
+        }
+    };
+
+    // Redeem a pending invite as soon as the user is authenticated.
+    useEffect(() => {
+        if (user && pendingInvite) {
+            redeemInviteFlow(pendingInvite.token, pendingInvite.secret);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user, pendingInvite]);
+
     const refreshProfile = async () => {
         if (user) {
             const { data } = await getProfile(user.id);
@@ -269,6 +459,7 @@ export const AuthProvider = ({ children }) => {
             if (data) {
                 setAnalyticsConsent(data.analytics_consent || false);
                 setErrorReportingConsent(data.error_reporting_consent || false);
+                syncQueueAnalyticsConsent(data.analytics_consent || false);
             }
         }
     };
@@ -290,6 +481,8 @@ export const AuthProvider = ({ children }) => {
             if (type === 'analytics') {
                 updates.analytics_consent = value;
                 setAnalyticsConsent(value);
+                // Sync the analytics queue so the toggle takes effect immediately.
+                await syncQueueAnalyticsConsent(value);
             } else if (type === 'errorReporting') {
                 updates.error_reporting_consent = value;
                 setErrorReportingConsent(value);
@@ -325,6 +518,14 @@ export const AuthProvider = ({ children }) => {
         signIn: handleSignIn,
         signUp: handleSignUp,
         signOut: handleSignOut,
+        deleteAccount: handleDeleteAccount,
+        resetPassword: handleResetPassword,
+        // Password recovery
+        passwordRecovery,
+        completePasswordReset,
+        cancelPasswordRecovery,
+        // Invite redemption
+        pendingInvite,
         refreshProfile,
         updateConsent,
     };

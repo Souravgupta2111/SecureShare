@@ -1,0 +1,48 @@
+appId: com.secureshare.app
+name: Share document then revoke access
+env:
+  SS_RECIPIENT_EMAIL: recipient@example.com
+---
+# Assumes 01_auth.yaml already signed the owner in (run the suite in order).
+- launchApp
+
+# --- SHARE ---
+# Navigate to the Share screen (adjust to your nav entry point / FAB).
+# TODO: add testID="fab-add" to FloatingActionButton and testID="nav-share".
+- assertVisible: "Share Document"
+
+- assertVisible: "Tap to select file or image"
+- tapOn: "Tap to select file or image"
+- tapOn: "Document"
+# The OS document picker is native; Maestro can drive it per-platform.
+# TODO: pick a small (<10MB) fixture file here for your device/emulator.
+
+- assertVisible: "Enter email address"
+- tapOn: "Enter email address"
+- inputText: ${SS_RECIPIENT_EMAIL}
+- hideKeyboard
+# TODO: add testID="recipient-add" to the add (+) button.
+- tapOn:
+    id: "recipient-add"
+    retryTapIfNoChange: true
+
+- tapOn: "24 Hours"
+
+- tapOn: "Share Securely"
+
+# Success animation / confirmation
+- extendedWaitUntil:
+    visible: "Home"
+    timeout: 30000
+
+# --- REVOKE ---
+# Open the shared document's access control and revoke the recipient.
+# TODO: add testIDs on DocCard + "Access Control" entry for stability.
+- tapOn:
+    text: ".*\\.(pdf|txt|docx|png|jpg)"   # first document card by filename
+    index: 0
+- tapOn: "Access Control"
+- assertVisible: ${SS_RECIPIENT_EMAIL}
+- tapOn: "Revoke"
+- assertVisible:
+    text: "Revoked|revoked"
