@@ -33,7 +33,7 @@ const SETTINGS_KEY = 'secureshare_user_settings';
 // Public legal + support endpoints (must be live for App Store review).
 const PRIVACY_URL = 'https://souravgupta2111.github.io/SecureShare/privacy-policy.html';
 const TERMS_URL = 'https://souravgupta2111.github.io/SecureShare/terms.html';
-const SUPPORT_EMAIL = 'support@secureshare.app';
+const SUPPORT_EMAIL = 'srvgupta007@gmail.com';
 
 const ProfileScreen = ({ navigation }) => {
     const insets = useSafeAreaInsets();

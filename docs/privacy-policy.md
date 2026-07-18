@@ -94,7 +94,7 @@ We do **NOT** sell your data. We may share information only:
 ## 6. Your Rights & Choices
 
 ### 6.1 Access & Portability
-You can request a copy of your data by contacting us at support@secureshare.app.
+You can request a copy of your data by contacting us at srvgupta007@gmail.com.
 
 ### 6.2 Deletion
 You can delete your account and all associated data at any time through the app settings.
@@ -154,10 +154,10 @@ We may update this Privacy Policy periodically. We will notify you of material c
 
 For questions about this Privacy Policy or your data:
 
-**Email:** support@secureshare.app
+**Email:** srvgupta007@gmail.com
 
 **Data Protection Officer:**
-privacy@secureshare.app
+srvgupta007@gmail.com
 
 ---
 
@@ -172,7 +172,7 @@ Under GDPR, you have the right to:
 - Object to processing
 - Withdraw consent
 
-To exercise these rights, contact privacy@secureshare.app.
+To exercise these rights, contact srvgupta007@gmail.com.
 
 ---
 
